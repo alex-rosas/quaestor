@@ -12,3 +12,6 @@ wheels/
 __pycache__/
 .chroma/
 data/raw/
+
+# Claude Code
+genesis/
