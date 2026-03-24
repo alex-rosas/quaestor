@@ -1,0 +1,18 @@
+[project]
+name = "quaestor"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "chromadb>=1.5.5",
+    "langchain>=1.2.13",
+    "langchain-community>=0.4.1",
+    "langchain-groq>=1.1.2",
+    "pydantic>=2.12.5",
+    "pypdf>=6.9.2",
+    "python-dotenv>=1.2.2",
+    "sec-edgar-downloader>=5.1.0",
+    "sentence-transformers>=5.3.0",
+    "streamlit>=1.55.0",
+]
