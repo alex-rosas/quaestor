@@ -22,6 +22,11 @@ class EmbeddingProvider(str, Enum):
     HUGGINGFACE = "huggingface"
 
 
+class VectorStoreBackend(str, Enum):
+    CHROMA = "chroma"
+    QDRANT = "qdrant"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -71,6 +76,10 @@ class Settings(BaseSettings):
     )
 
     # --- Vector store ---
+    vector_store_backend: VectorStoreBackend = Field(
+        default=VectorStoreBackend.CHROMA,
+        description="Which vector store to use: chroma | qdrant",
+    )
     chroma_persist_dir: Path = Field(
         default=Path(".chroma"),
         description="Directory where ChromaDB persists its data",
@@ -78,6 +87,14 @@ class Settings(BaseSettings):
     chroma_collection_name: str = Field(
         default="quaestor",
         description="ChromaDB collection name",
+    )
+    qdrant_url: str = Field(
+        default="http://localhost:6333",
+        description="Qdrant server URL (Docker, e.g. http://localhost:6333)",
+    )
+    qdrant_collection_name: str = Field(
+        default="quaestor",
+        description="Qdrant collection name",
     )
 
     # --- Chunking ---
