@@ -84,7 +84,9 @@ def _doc_id(doc: Document, index: int) -> str:
     source = doc.metadata.get("source", "")
     page = doc.metadata.get("page", 0)
     start = doc.metadata.get("start_index", index)
-    raw = f"{source}::page={page}::start={start}"
+    parent_id = doc.metadata.get("parent_id", "")
+    chunk_index = doc.metadata.get("chunk_index", index)
+    raw = f"{source}::page={page}::start={start}::parent={parent_id}::ci={chunk_index}"
     h = hashlib.md5(raw.encode()).hexdigest()  # noqa: S324 — not used for security
     return str(uuid.UUID(hex=h))
 

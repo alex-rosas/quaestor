@@ -138,7 +138,7 @@ def main() -> None:
     graph = build_rag_graph(
         vector_store=vector_store,
         cross_encoder=cross_encoder,
-        confidence_threshold=0.0,
+        confidence_threshold=-5.0,  # very permissive: test Q&A ability, not the gate
     )
     print(f"  Graph compiled in {time.time() - t0:.1f}s")
     check("Graph built", graph is not None)
