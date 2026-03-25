@@ -23,8 +23,7 @@ Fixed-size chunking is the academic-standard reference configuration (RAGAS pape
 ## Running This Version
 ```bash
 # From this directory
-uv venv
-uv pip install -e .
+uv sync
 uv run streamlit run app.py
 ```
 
