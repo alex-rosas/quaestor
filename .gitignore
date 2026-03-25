@@ -15,3 +15,24 @@ data/raw/
 
 # Claude Code
 genesis/
+
+# Benchmarks - results only, not raw data
+benchmarks/*.csv
+benchmarks/*.parquet
+!benchmarks/*.json
+
+# Keep docs/ clean
+docs/**/.DS_Store
+docs/**/*.tmp
+
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
+# Python cache (more aggressive pattern)
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Temporary files
+migration-status.txt
