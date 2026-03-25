@@ -29,3 +29,53 @@ uv run streamlit run app.py
 ```
 
 Full technical walkthrough: [docs/architecture/phase1-baseline.md](../../docs/architecture/phase1-baseline.md)
+
+## Setup and Installation
+
+### 1. Environment Setup
+```bash
+# Copy the environment template
+cp .env.example .env
+
+# Edit .env and add your API keys
+# At minimum, you need ONE of:
+#   - GROQ_API_KEY (recommended - free tier, fast)
+#   - Local Ollama running (no API key needed)
+#   - TOGETHER_API_KEY (fallback)
+```
+
+### 2. Install Dependencies
+```bash
+# Create virtual environment and install packages
+uv sync
+```
+
+### 3. Download Sample Data (Optional)
+
+The baseline was tested against Apple's FY2025 10-K. To reproduce:
+```bash
+# Download Apple 10-K
+uv run python -c "
+from sec_edgar_downloader import Downloader
+dl = Downloader('YourName', 'your@email.com')
+dl.get('10-K', 'AAPL', limit=1)
+"
+```
+
+Or upload your own PDF via the Streamlit interface.
+
+### 4. Run the Application
+```bash
+uv run streamlit run app.py
+```
+
+## Troubleshooting
+
+**"KeyError: 'GROQ_API_KEY'"**
+→ Copy `.env.example` to `.env` and add your Groq API key
+
+**"Connection refused to localhost:11434"**
+→ If using Ollama, start it first: `ollama serve`
+
+**"No chunks retrieved"**
+→ Index a document first via the Streamlit sidebar before querying
