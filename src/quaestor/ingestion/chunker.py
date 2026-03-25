@@ -12,6 +12,7 @@ chunk_documents(docs, strategy="fixed") -> list[Document]
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from enum import Enum
 from typing import TYPE_CHECKING, Literal
@@ -61,32 +62,44 @@ def chunk_documents(
         "percentile", "standard_deviation", "interquartile", "gradient"
     ] = "percentile",
     embeddings: Embeddings | None = None,
+    parent_chunk_size: int = 1024,
+    child_chunk_size: int = 256,
+    child_chunk_overlap: int = 0,
 ) -> list[Document]:
     """Split *docs* into chunks using the chosen *strategy*.
 
     Args:
         docs:                      Source documents (e.g. from loader.load_pdf).
-        strategy:                  Chunking strategy — ``"fixed"`` (Phase 1),
-                                   ``"semantic"`` (Phase 2), or
-                                   ``"hierarchical"`` (Phase 2, not yet implemented).
+        strategy:                  Chunking strategy:
+                                   ``"fixed"`` — Phase 1 baseline,
+                                   ``"semantic"`` — embedding-level boundaries,
+                                   ``"hierarchical"`` — parent/child split.
         chunk_size:                Override ``settings.chunk_size`` (fixed only).
         chunk_overlap:             Override ``settings.chunk_overlap`` (fixed only).
-        breakpoint_threshold_type: How SemanticChunker detects topic boundaries.
+        breakpoint_threshold_type: Boundary detection for SemanticChunker.
                                    One of ``"percentile"`` (default),
                                    ``"standard_deviation"``, ``"interquartile"``,
-                                   ``"gradient"``. Ignored for fixed strategy.
+                                   ``"gradient"``. Ignored for other strategies.
         embeddings:                Inject a custom embedding model (semantic only).
                                    Defaults to the provider in ``settings``.
+        parent_chunk_size:         Parent window size in chars (hierarchical only).
+                                   Default 1024.
+        child_chunk_size:          Child window size in chars (hierarchical only).
+                                   Default 256. Must be < parent_chunk_size.
+        child_chunk_overlap:       Overlap between child chunks (hierarchical only).
+                                   Default 0.
 
     Returns:
         List of chunk Documents with preserved + extended metadata.
         All source metadata is kept; ``chunk_index`` is added to every chunk.
+        Hierarchical chunks additionally carry ``chunk_level``, ``parent_content``,
+        ``parent_id``, and ``parent_index``.
 
     Raises:
-        ValueError:          If *docs* is empty or strategy is unknown.
-        NotImplementedError: If *strategy* is ``"hierarchical"`` (Phase 2 TODO).
-        ImportError:         If *strategy* is ``"semantic"`` and
-                             ``langchain-experimental`` is not installed.
+        ValueError: If *docs* is empty, strategy is unknown, or
+                    child_chunk_size >= parent_chunk_size.
+        ImportError: If strategy is ``"semantic"`` and
+                     ``langchain-experimental`` is not installed.
     """
     if not docs:
         raise ValueError("chunk_documents received an empty document list.")
@@ -104,9 +117,16 @@ def chunk_documents(
         )
 
     if strategy == ChunkStrategy.HIERARCHICAL:
-        raise NotImplementedError(
-            "Hierarchical chunking is a Phase 2 feature not yet implemented. "
-            "Use strategy='fixed' or strategy='semantic'."
+        if child_chunk_size >= parent_chunk_size:
+            raise ValueError(
+                f"child_chunk_size ({child_chunk_size}) must be smaller than "
+                f"parent_chunk_size ({parent_chunk_size})."
+            )
+        return _chunk_hierarchical(
+            docs,
+            parent_chunk_size=parent_chunk_size,
+            child_chunk_size=child_chunk_size,
+            child_chunk_overlap=child_chunk_overlap,
         )
 
     raise ValueError(f"Unknown strategy: {strategy!r}")  # unreachable
@@ -198,6 +218,92 @@ def _chunk_semantic(
         breakpoint_threshold_type,
     )
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# Hierarchical strategy
+# ---------------------------------------------------------------------------
+
+def _chunk_hierarchical(
+    docs: list[Document],
+    parent_chunk_size: int,
+    child_chunk_size: int,
+    child_chunk_overlap: int,
+) -> list[Document]:
+    """Split *docs* into parent windows, then split each parent into children.
+
+    Only child chunks are returned — they are small enough for precise
+    embedding retrieval. Each child carries its parent's full text in
+    ``metadata["parent_content"]`` so the RAG chain can inject the larger
+    context at generation time, recovering table structure that fixed-size
+    splitting destroys (failure type F3 in the Phase 1 analysis).
+
+    Metadata added to every child chunk:
+
+    * ``chunk_level``    — always ``"child"``.
+    * ``parent_content`` — the full text of the enclosing parent chunk.
+    * ``parent_id``      — stable hash of ``source + parent start_index``.
+    * ``parent_index``   — 0-based position of the parent within the source doc.
+    * ``chunk_index``    — 0-based position of this child within its parent.
+
+    Args:
+        docs:               Source documents.
+        parent_chunk_size:  Max characters per parent window.
+        child_chunk_size:   Max characters per child window.
+        child_chunk_overlap: Character overlap between consecutive children.
+    """
+    parent_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=parent_chunk_size,
+        chunk_overlap=0,
+        length_function=len,
+        add_start_index=True,
+    )
+    child_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=child_chunk_size,
+        chunk_overlap=child_chunk_overlap,
+        length_function=len,
+        add_start_index=True,
+    )
+
+    all_children: list[Document] = []
+
+    for doc in docs:
+        parents = parent_splitter.split_documents([doc])
+        for parent_idx, parent in enumerate(parents):
+            pid = _parent_id(parent, parent_idx)
+            children = child_splitter.split_documents([parent])
+            for child_idx, child in enumerate(children):
+                child.metadata.update({
+                    "chunk_level":    "child",
+                    "parent_content": parent.page_content,
+                    "parent_id":      pid,
+                    "parent_index":   parent_idx,
+                    "chunk_index":    child_idx,
+                })
+                all_children.append(child)
+
+    logger.info(
+        "Hierarchical chunking: %d doc(s) → %d child chunk(s) "
+        "(parent_size=%d, child_size=%d, child_overlap=%d)",
+        len(docs),
+        len(all_children),
+        parent_chunk_size,
+        child_chunk_size,
+        child_chunk_overlap,
+    )
+    return all_children
+
+
+def _parent_id(parent: Document, index: int) -> str:
+    """Stable 12-hex-char ID for a parent chunk.
+
+    Derived from source path and start_index so re-chunking the same
+    document produces the same IDs (idempotent upserts).
+    """
+    source = parent.metadata.get("source", "")
+    start  = parent.metadata.get("start_index", index)
+    raw    = f"{source}::parent_start={start}"
+    return hashlib.md5(raw.encode()).hexdigest()[:12]  # noqa: S324
 
 
 # ---------------------------------------------------------------------------

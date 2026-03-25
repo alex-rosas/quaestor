@@ -218,15 +218,109 @@ class TestSemanticStrategy:
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 stubs (hierarchical still pending)
+# Hierarchical strategy
 # ---------------------------------------------------------------------------
 
-class TestPhase2Stubs:
-    def test_hierarchical_raises_not_implemented(self) -> None:
-        docs = [make_doc("Some text.")]
-        with pytest.raises(NotImplementedError):
-            chunk_documents(docs, strategy="hierarchical")
+class TestHierarchicalStrategy:
+    """Tests for strategy='hierarchical'.
 
+    All tests are fully offline — no embeddings required.
+    Uses parent_chunk_size=300, child_chunk_size=100 for fast deterministic splits.
+    """
+
+    _P = 300  # parent size
+    _C = 100  # child size
+
+    def _chunks(self, docs: list, **kw):
+        return chunk_documents(
+            docs, strategy="hierarchical",
+            parent_chunk_size=self._P, child_chunk_size=self._C,
+            **kw,
+        )
+
+    def test_returns_list_of_documents(self) -> None:
+        chunks = self._chunks([make_doc(long_text(200))])
+        assert isinstance(chunks, list)
+        assert all(isinstance(c, Document) for c in chunks)
+
+    def test_all_chunks_are_children(self) -> None:
+        chunks = self._chunks([make_doc(long_text(200))])
+        assert all(c.metadata["chunk_level"] == "child" for c in chunks)
+
+    def test_parent_content_present(self) -> None:
+        chunks = self._chunks([make_doc(long_text(200))])
+        assert all("parent_content" in c.metadata for c in chunks)
+        assert all(len(c.metadata["parent_content"]) > 0 for c in chunks)
+
+    def test_child_text_contained_in_parent(self) -> None:
+        chunks = self._chunks([make_doc(long_text(200))])
+        for chunk in chunks:
+            assert chunk.page_content in chunk.metadata["parent_content"]
+
+    def test_parent_id_present_and_stable(self) -> None:
+        doc = make_doc(long_text(200))
+        chunks_a = self._chunks([doc])
+        chunks_b = self._chunks([doc])
+        ids_a = [c.metadata["parent_id"] for c in chunks_a]
+        ids_b = [c.metadata["parent_id"] for c in chunks_b]
+        assert ids_a == ids_b  # deterministic
+
+    def test_parent_index_present(self) -> None:
+        chunks = self._chunks([make_doc(long_text(300))])
+        assert all("parent_index" in c.metadata for c in chunks)
+
+    def test_chunk_index_resets_per_parent(self) -> None:
+        chunks = self._chunks([make_doc(long_text(300))])
+        by_parent: dict[int, list[int]] = {}
+        for c in chunks:
+            pi = c.metadata["parent_index"]
+            by_parent.setdefault(pi, []).append(c.metadata["chunk_index"])
+        for indices in by_parent.values():
+            assert indices == list(range(len(indices)))
+
+    def test_more_children_than_parents(self) -> None:
+        chunks = self._chunks([make_doc(long_text(400))])
+        n_parents = len({c.metadata["parent_id"] for c in chunks})
+        assert len(chunks) >= n_parents
+
+    def test_source_metadata_preserved(self) -> None:
+        chunks = self._chunks([make_doc(long_text(200), source="jpm_10k.htm")])
+        assert all(c.metadata["source"] == "jpm_10k.htm" for c in chunks)
+
+    def test_page_metadata_preserved(self) -> None:
+        chunks = self._chunks([make_doc(long_text(200), page=5)])
+        assert all(c.metadata["page"] == 5 for c in chunks)
+
+    def test_multiple_docs_all_chunked(self) -> None:
+        docs = [make_doc(long_text(200), source=f"doc{i}.htm") for i in range(3)]
+        chunks = self._chunks(docs)
+        sources = {c.metadata["source"] for c in chunks}
+        assert sources == {"doc0.htm", "doc1.htm", "doc2.htm"}
+
+    def test_enum_strategy_accepted(self) -> None:
+        chunks = chunk_documents(
+            [make_doc(long_text(200))],
+            strategy=ChunkStrategy.HIERARCHICAL,
+            parent_chunk_size=self._P,
+            child_chunk_size=self._C,
+        )
+        assert isinstance(chunks, list)
+
+    def test_child_size_gte_parent_raises(self) -> None:
+        with pytest.raises(ValueError, match="child_chunk_size"):
+            chunk_documents(
+                [make_doc("text")],
+                strategy="hierarchical",
+                parent_chunk_size=100,
+                child_chunk_size=100,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Invalid strategy
+# ---------------------------------------------------------------------------
+
+class TestInvalidStrategy:
     def test_invalid_strategy_raises_value_error(self) -> None:
         docs = [make_doc("Some text.")]
         with pytest.raises(ValueError):
