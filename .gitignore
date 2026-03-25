@@ -47,5 +47,11 @@ data/**/*
 !data/.gitkeep
 !data/processed/.gitkeep
 
-# Provisional
-docs/*
+# docs/ — ignored until final documentation phase
+docs/
+
+# Baseline runtime artifacts
+examples/phase1-baseline/data/
+examples/phase1-baseline/.chroma/
+examples/phase1-baseline/.venv/
+examples/phase1-baseline/.tmp_uploads/
