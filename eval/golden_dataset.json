@@ -1,0 +1,173 @@
+{
+  "version": "1.0",
+  "created": "2026-03-25",
+  "source_filing": "Apple Inc. Form 10-K, Fiscal Year 2025 (filed 2025-10-31)",
+  "description": "20-question golden dataset for RAGAS evaluation of the Quaestor RAG pipeline. Covers three question types: factual (single-hop), multi-hop (require combining two or more pieces of evidence), and unanswerable (information not present in the filing). Ground-truth answers are derived from the AAPL FY2025 10-K smoke-test results recorded in HERODOTO Session 1.",
+  "question_types": {
+    "factual": 8,
+    "multi_hop": 7,
+    "unanswerable": 5
+  },
+  "questions": [
+    {
+      "id": "Q01",
+      "type": "factual",
+      "question": "What were Apple's total net sales in fiscal year 2025?",
+      "ground_truth": "Apple's total net sales in fiscal year 2025 were $416,161 million ($416.2 billion).",
+      "source_pages": [27],
+      "notes": "Top-line revenue figure, directly stated in the income statement."
+    },
+    {
+      "id": "Q02",
+      "type": "factual",
+      "question": "What was Apple's net income in fiscal year 2025?",
+      "ground_truth": "Apple's net income in fiscal year 2025 was $112,010 million.",
+      "source_pages": [31],
+      "notes": "Bottom-line figure from the consolidated statements of operations."
+    },
+    {
+      "id": "Q03",
+      "type": "factual",
+      "question": "What was Apple's net income in fiscal year 2024?",
+      "ground_truth": "Apple's net income in fiscal year 2024 was $93,736 million.",
+      "source_pages": [31],
+      "notes": "Prior-year comparative figure on the same income statement."
+    },
+    {
+      "id": "Q04",
+      "type": "factual",
+      "question": "What was Apple's net income in fiscal year 2023?",
+      "ground_truth": "Apple's net income in fiscal year 2023 was $96,995 million.",
+      "source_pages": [31],
+      "notes": "Two-year-prior comparative figure."
+    },
+    {
+      "id": "Q05",
+      "type": "factual",
+      "question": "What are the primary risk factors Apple cites related to interest rates?",
+      "ground_truth": "Apple cites interest rate risk as a primary financial risk factor, noting that changes in interest rates affect the fair value of its investment portfolio and the cost of debt financing. The company uses derivative instruments to hedge some of this exposure.",
+      "source_pages": [23, 30],
+      "notes": "Cited in both risk factors and quantitative disclosures about market risk."
+    },
+    {
+      "id": "Q06",
+      "type": "factual",
+      "question": "What other primary risk factors does Apple disclose in its 10-K?",
+      "ground_truth": "Apple discloses foreign exchange (FX) risk, cybersecurity risk, credit risk, supply chain concentration risk, and macroeconomic uncertainty as primary risk factors in its 10-K filing.",
+      "source_pages": [23, 30],
+      "notes": "Risk factors section covers multiple categories."
+    },
+    {
+      "id": "Q07",
+      "type": "factual",
+      "question": "On what date was Apple's fiscal year 2025 10-K filing submitted to the SEC?",
+      "ground_truth": "Apple's fiscal year 2025 Form 10-K was filed with the SEC on October 31, 2025.",
+      "source_pages": [1],
+      "notes": "Cover page filing date."
+    },
+    {
+      "id": "Q08",
+      "type": "factual",
+      "question": "What does Apple identify as its main product and service categories?",
+      "ground_truth": "Apple's main product and service categories are iPhone, Mac, iPad, Wearables/Home/Accessories, and Services.",
+      "source_pages": [27],
+      "notes": "Revenue disaggregation table in the income statement notes."
+    },
+    {
+      "id": "Q09",
+      "type": "multi_hop",
+      "question": "How did Apple's net income change between fiscal year 2024 and fiscal year 2025, and what percentage growth does that represent?",
+      "ground_truth": "Apple's net income increased from $93,736 million in fiscal year 2024 to $112,010 million in fiscal year 2025, an increase of $18,274 million, representing approximately 19.5% year-over-year growth.",
+      "source_pages": [31],
+      "notes": "Requires combining FY2024 and FY2025 net income figures and calculating the change."
+    },
+    {
+      "id": "Q10",
+      "type": "multi_hop",
+      "question": "How did Apple's net income trend across fiscal years 2023, 2024, and 2025?",
+      "ground_truth": "Apple's net income declined from $96,995 million in FY2023 to $93,736 million in FY2024 (a decrease of approximately 3.4%), then recovered strongly to $112,010 million in FY2025 (an increase of approximately 19.5%), reaching its highest level in the three-year period.",
+      "source_pages": [31],
+      "notes": "Three-year trend analysis requiring all three comparative figures."
+    },
+    {
+      "id": "Q11",
+      "type": "multi_hop",
+      "question": "How did Apple's total net sales compare between fiscal years 2024 and 2025, and what was the approximate growth rate?",
+      "ground_truth": "Apple's total net sales grew from approximately $391,035 million in fiscal year 2024 to $416,161 million in fiscal year 2025, an increase of roughly $25,126 million or approximately 6.4% year-over-year.",
+      "source_pages": [27],
+      "notes": "Requires FY2024 and FY2025 net sales figures and a percentage calculation."
+    },
+    {
+      "id": "Q12",
+      "type": "multi_hop",
+      "question": "What combination of risk factors related to its global supply chain and geographic market concentration does Apple disclose?",
+      "ground_truth": "Apple discloses that it relies heavily on a concentrated set of suppliers and manufacturers, primarily located in Asia, and that a significant portion of its revenue comes from a limited number of geographic markets. Disruptions from geopolitical tensions, trade restrictions, natural disasters, or regulatory changes in these regions could materially harm its business.",
+      "source_pages": [23],
+      "notes": "Requires combining supply chain risk and geographic concentration risk disclosures."
+    },
+    {
+      "id": "Q13",
+      "type": "multi_hop",
+      "question": "What do Apple's risk factor disclosures say about the relationship between macroeconomic conditions and consumer demand for its products?",
+      "ground_truth": "Apple discloses that its results are sensitive to macroeconomic conditions, including consumer confidence, unemployment rates, credit availability, and foreign currency exchange rates. Deteriorating economic conditions can reduce consumer and enterprise spending, adversely affecting demand for Apple's products and services.",
+      "source_pages": [23],
+      "notes": "Requires connecting macro risk factors to their revenue impact."
+    },
+    {
+      "id": "Q14",
+      "type": "multi_hop",
+      "question": "How does Apple describe its cybersecurity risk and what potential consequences does it disclose?",
+      "ground_truth": "Apple discloses cybersecurity risk as a significant threat, noting that breaches or attacks could compromise customer data and proprietary information, damage its reputation, disrupt operations, and expose the company to legal liability and regulatory penalties.",
+      "source_pages": [23],
+      "notes": "Requires combining the cybersecurity risk description with its stated consequences."
+    },
+    {
+      "id": "Q15",
+      "type": "multi_hop",
+      "question": "How does Apple's exposure to foreign exchange risk interact with its international revenue base according to the 10-K?",
+      "ground_truth": "Apple generates a significant portion of its net sales outside the United States in currencies other than the US dollar. The company discloses that fluctuations in foreign exchange rates can materially affect reported revenue and earnings when results are translated back to US dollars, representing a key market risk.",
+      "source_pages": [23, 30],
+      "notes": "Requires linking FX risk disclosure to the international revenue composition."
+    },
+    {
+      "id": "Q16",
+      "type": "unanswerable",
+      "question": "What is Apple's projected total net sales for fiscal year 2026?",
+      "ground_truth": "The document does not contain sufficient information to answer this question. Apple's 10-K does not provide forward-looking revenue projections for future fiscal years.",
+      "source_pages": [],
+      "notes": "Forward-looking guidance not included in 10-K filings."
+    },
+    {
+      "id": "Q17",
+      "type": "unanswerable",
+      "question": "What is Apple's internal target stock price or market capitalisation goal?",
+      "ground_truth": "The document does not contain sufficient information to answer this question. Apple does not disclose internal stock price targets or market capitalisation goals in its 10-K filing.",
+      "source_pages": [],
+      "notes": "Not a required SEC disclosure."
+    },
+    {
+      "id": "Q18",
+      "type": "unanswerable",
+      "question": "How many new employees does Apple plan to hire in fiscal year 2026?",
+      "ground_truth": "The document does not contain sufficient information to answer this question. Apple's 10-K does not include forward-looking hiring plans for future periods.",
+      "source_pages": [],
+      "notes": "Forward-looking headcount guidance not disclosed."
+    },
+    {
+      "id": "Q19",
+      "type": "unanswerable",
+      "question": "What are Apple's specific plans for entering the autonomous vehicle market?",
+      "ground_truth": "The document does not contain sufficient information to answer this question. Apple's fiscal year 2025 10-K does not disclose any specific plans for autonomous vehicle development or market entry.",
+      "source_pages": [],
+      "notes": "Product roadmap not disclosed in 10-K."
+    },
+    {
+      "id": "Q20",
+      "type": "unanswerable",
+      "question": "What dividends per share did Apple pay in fiscal year 2020?",
+      "ground_truth": "The document does not contain sufficient information to answer this question. The fiscal year 2025 10-K only covers financial data for fiscal years 2023, 2024, and 2025; fiscal year 2020 dividend data is not included.",
+      "source_pages": [],
+      "notes": "Historical data outside the 10-K's comparative period."
+    }
+  ]
+}
