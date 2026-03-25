@@ -46,3 +46,6 @@ notebooks/**/*.ipynb
 data/**/*
 !data/.gitkeep
 !data/processed/.gitkeep
+
+# Provisional
+docs/*
