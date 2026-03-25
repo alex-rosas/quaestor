@@ -98,6 +98,10 @@ class Settings(BaseSettings):
         gt=0,
         description="Number of chunks to retrieve per query",
     )
+    reranker_model: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        description="Sentence-Transformers cross-encoder model for reranking",
+    )
 
     # --- Data paths ---
     data_raw_dir: Path = Field(
