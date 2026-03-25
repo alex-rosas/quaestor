@@ -37,10 +37,9 @@ docs/**/*.tmp
 # Temporary files
 migration-status.txt
 
-# Notebooks - exploratory only, never commit
-notebooks/*.ipynb
-notebooks/**/*.ipynb
-!notebooks/.gitkeep
+# Notebooks - commit the notebooks, ignore generated data and checkpoints
+notebooks/data/
+.ipynb_checkpoints/
 
 # Data directories - structure only, never commit actual data
 data/**/*
@@ -55,3 +54,4 @@ examples/phase1-baseline/data/
 examples/phase1-baseline/.chroma/
 examples/phase1-baseline/.venv/
 examples/phase1-baseline/.tmp_uploads/
+
