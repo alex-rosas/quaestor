@@ -6,180 +6,990 @@
 
 ---
 
-## Session 3 — 2026-03-25
-
-### What was built
-
-Full Phase 2 pipeline — every component from cross-encoder reranking through
-LangGraph, Qdrant hybrid retrieval, PII/hallucination guardrails, FastAPI, and
-RAGAS evaluation harness.  The Phase 2 smoke test runs all 8 steps end-to-end
-against the live AAPL FY2025 10-K with all checks passing.
-
-| Module | Tests | Status |
-|---|---|---|
-| `src/quaestor/retrieval/reranker.py` | `tests/unit/test_reranker.py` (16) | ✅ |
-| `src/quaestor/retrieval/graph.py` | `tests/unit/test_graph.py` (23) | ✅ |
-| `src/quaestor/ingestion/indexer.py` — Qdrant hybrid | `tests/unit/test_qdrant_indexer.py` (17) | ✅ |
-| `src/quaestor/guardrails/input.py` | `tests/unit/test_input_guardrail.py` (23) | ✅ |
-| `src/quaestor/guardrails/output.py` | `tests/unit/test_output_guardrail.py` (20) | ✅ |
-| `src/quaestor/api/main.py` + `schemas.py` | `tests/unit/test_api.py` (26) | ✅ |
-| `eval/evaluate.py` | `tests/unit/test_evaluate.py` (30) | ✅ |
-| `eval/golden_dataset.json` | 20 questions (8 factual, 7 multi_hop, 5 unanswerable) | ✅ |
-| `scripts/evaluate.py` | CLI with `--limit`, `--no-rerank`, `--top-k` flags | ✅ |
-| `app.py` | Rewritten for Phase 2 (LangGraph, PII, NLI, confidence slider) | ✅ |
-| `scripts/smoke_test_phase2.py` | 8-step live end-to-end test | ✅ |
-
-**Total unit tests: 297 passed, 0 failed, 10.2 s.**
+## Session 3 — 2026-03-25 — Phase 2: Production Depth
 
 ---
 
-### Phase 2 smoke test results (AAPL FY2025 10-K, 1110 child chunks)
+### 1. Experimental Motivation
+
+Phase 1 proved the pipeline was correct. It could not prove it was reliable.
+
+The failure case is easy to construct. Take a 10-K section on revenue
+recognition. Fixed-size splitting (512 chars, 50 overlap) cuts that section at
+position 512 regardless of what is in the text at that position. A sentence like:
 
 ```
-Cross-encoder : cross-encoder/ms-marco-MiniLM-L-6-v2 (local, no API cost)
-Graph         : retrieve → rerank → confidence_gate → generate/refuse
-Confidence    : -5.0 for Q&A test, 999.0 for forced-refusal test
+"Net sales for the Americas segment were $124,297 million, representing
+a 5.2% increase over fiscal year 2024, driven primarily by iPhone revenue growth
 ```
 
-| Step | Result |
+might become:
+
+```
+Chunk A: "…Net sales for the Americas segment were $124,297 million, representing"
+Chunk B: "a 5.2% increase over fiscal year 2024, driven primarily by iPhone revenue growth"
+```
+
+When the user asks "What was Americas segment revenue growth?", the embedding of
+the query is most similar to Chunk B (it contains "increase" and "revenue
+growth"). Chunk B is retrieved. The LLM receives it and sees the percentage with
+no dollar anchor. It correctly has no basis for a precise answer.
+
+This is not a hypothetical. During Phase 1 smoke test development, answers to
+comparative questions (e.g., "how did net income change year over year?") came
+back as "I don't have enough information" even when the filing clearly stated the
+figures — because the relevant sentence was split between two chunks, and only
+one was retrieved.
+
+Phase 1 also had a second, subtler failure: it always answered. No matter how
+irrelevant the retrieved chunks were, the LLM would generate something. On the
+five unanswerable questions in the golden dataset — questions whose answers are
+literally not in the filing — a Phase 1 pipeline would hallucinate plausible-
+sounding figures. There was no mechanism to say "I retrieved three chunks, their
+best similarity score to this question is 0.12, that is not enough evidence."
+
+These two failures define Phase 2's mandate.
+
+---
+
+### 2. The Key Hypothesis
+
+**Hypothesis A (chunking):** Preserving the semantic unit — the parent section —
+alongside the retrieval unit — the child chunk — means the LLM always receives
+enough context to answer questions that span a few related sentences, without the
+noise overhead of retrieving an entire 1024-char section for every query.
+
+**Hypothesis B (confidence gate):** Cross-encoder reranking scores each
+(query, chunk) pair jointly, reading both texts simultaneously. This produces
+a relevance score calibrated enough to distinguish "I found the answer" from
+"I found something topically related but not the answer." If the top-ranked
+chunk scores below a threshold, refusing is safer than answering.
+
+Measurable prediction: on the five unanswerable golden-dataset questions, a
+properly calibrated confidence gate should refuse ≥ 95% of the time. On the 15
+answerable questions, the parent-context strategy should produce more complete
+answers to comparative and multi-hop questions.
+
+---
+
+### 3. How the Old Pipeline Behaved
+
+Phase 1 execution trace for "What was Apple's net income in fiscal year 2025
+compared to 2024?":
+
+**Step 1 — Retrieval** (`retriever.py`):
+```python
+docs = vector_store.similarity_search(question, k=5)
+```
+The five returned chunks, in cosine-similarity order, were fragments of the
+Consolidated Statements of Operations table. Each chunk was 512 chars, split at
+arbitrary positions. Representative example:
+
+```
+[Source: aapl-20250927.htm, Page 31]
+2025 2024 2023 Net income $ 112,010 $ 93,736 $ 96,995 Earnings per share: Basic
+$ 7.64 $ 6.11 Basic shares used in computing earnings per share 14,659 15,344
+```
+
+The table structure survived intact here — this was luck. The `$` symbols and
+year headers are small enough that the splitter didn't cut between them. But for
+a question requiring narrative context around a table (e.g., "why did operating
+expenses grow?"), the retrieved chunk would contain the number but not the
+explanatory sentences from the MD&A section that preceded the table.
+
+**Step 2 — Generation** (`chain.py`):
+The prompt received all five raw chunks concatenated without any ranking or
+filtering. The LLM saw 2560 characters of mixed context, some highly relevant,
+some not. It correctly cited the FY2025/2024 figures on a good day. On a bad day
+— when the splitter cut one filing year from the other — it output only one year
+with a note that it lacked comparative data.
+
+**The core problem:** the pipeline had no signal about retrieval quality. It
+treated a cosine similarity of 0.95 and 0.35 identically — both would trigger
+LLM generation.
+
+---
+
+### 4. The Phase 2 Mechanism — Implementation Reality
+
+Phase 2 adds five architectural layers. Each is in a specific file.
+
+---
+
+#### 4a. Hierarchical Chunking — `src/quaestor/ingestion/chunker.py`
+
+**Function:** `_chunk_hierarchical(docs, parent_chunk_size=1024, child_chunk_size=256, child_chunk_overlap=0)`
+
+The logic is a nested double-split. For each source document:
+1. A `RecursiveCharacterTextSplitter(chunk_size=1024)` splits the document into
+   parent windows. These are not stored in the vector store.
+2. A second `RecursiveCharacterTextSplitter(chunk_size=256)` splits each parent
+   into child chunks. These are what gets embedded and stored.
+3. Every child carries its parent's full text in `metadata["parent_content"]`.
+
+Metadata on each returned child chunk:
+```python
+{
+    "source": "aapl-20250927.htm",
+    "page": 31,
+    "filing_type": "10-K",
+    "start_index": 128,          # offset within the PARENT, not the document
+    "chunk_level": "child",
+    "parent_content": "...",     # full 1024-char parent text
+    "parent_id": "a3f9c1d7e4b2", # MD5[:12] of source::parent_start_index
+    "parent_index": 5,           # 0-based parent position within source doc
+    "chunk_index": 2,            # 0-based child position within parent
+}
+```
+
+The RAG chain at generation time uses `parent_content` instead of
+`page_content` when it formats the context. A child that says "112,010" in
+256 chars gives the LLM the surrounding 1024 chars explaining what that number
+refers to. This is the mechanism behind Hypothesis A.
+
+**Why child_chunk_overlap=0?** Children of the same parent already share context
+through `parent_content`. Overlap between children would create redundant text in
+the context window without additional information.
+
+**The `_parent_id` hash:**
+```python
+def _parent_id(parent: Document, index: int) -> str:
+    source = parent.metadata.get("source", "")
+    start  = parent.metadata.get("start_index", index)
+    raw    = f"{source}::parent_start={start}"
+    return hashlib.md5(raw.encode()).hexdigest()[:12]
+```
+12-char hex, not UUID — this is an internal reference between sibling chunks,
+not a database primary key. The full UUID format is only required by
+`_doc_id` (the Chroma/Qdrant point ID).
+
+---
+
+#### 4b. Cross-Encoder Reranking — `src/quaestor/retrieval/reranker.py`
+
+**Core function:** `rerank(query, docs, cross_encoder=None, top_n=None)`
+
+The difference between a bi-encoder (used for initial retrieval) and a cross-
+encoder is the input. A bi-encoder encodes query and document independently:
+```
+embed(query) · embed(document)  →  similarity scalar
+```
+A cross-encoder reads both together:
+```
+BERT([CLS] query [SEP] document [SEP])  →  relevance scalar
+```
+The joint encoding captures explicit reasoning about whether the document answers
+the question, not just whether they are topically similar.
+
+The implementation:
+```python
+pairs = [[query, doc.page_content] for doc in docs]
+scores: list[float] = list(cross_encoder.predict(pairs))
+ranked = sorted(zip(scores, docs), key=lambda x: x[0], reverse=True)
+```
+
+Model: `cross-encoder/ms-marco-MiniLM-L-6-v2` (configurable via
+`settings.reranker_model`). MiniLM is the standard production choice: 80 MB,
+runs on CPU in ~50 ms for 5 pairs, trained on the MS MARCO passage retrieval
+benchmark which includes technical and factual question-answer pairs.
+
+**Score range:** The cross-encoder does not output a calibrated probability. Its
+scores are raw logits from the final linear layer, typically ranging from roughly
+-10 to +10. A score of 3.9 for "What was Apple's total net sales?" means the
+model is highly confident that chunk is relevant. A score of -2.1 for "What are
+the primary risk factors?" means the retrieved chunks are not directly answering
+that question (possibly because they are quantitative tables, not the textual
+risk factor disclosures).
+
+**`CrossEncoderProtocol`:** A `@runtime_checkable` Protocol with one method:
+```python
+def predict(self, sentences: list[list[str]]) -> list[float]: ...
+```
+Any object satisfying this interface works. Tests inject `FakeHighCrossEncoder`
+(returns `[5.0] * len(sentences)`) or `FakeLowCrossEncoder` (returns
+`[-10.0] * len(sentences)`) without downloading the model. The `isinstance`
+check via `@runtime_checkable` makes this testable: `assert isinstance(stub,
+CrossEncoderProtocol)` passes before the stub is passed to production code.
+
+---
+
+#### 4c. LangGraph State Machine — `src/quaestor/retrieval/graph.py`
+
+The Phase 1 pipeline was a linear LCEL chain: retrieve → prompt → LLM →
+parse. There was no branching. Phase 2 introduces a state machine with four
+nodes and one conditional branch.
+
+**State definition:**
+```python
+class RAGState(TypedDict):
+    question: str
+    docs: list[Document]
+    top_score: float
+    answer: str
+    sources: list[str]
+    refused: bool
+    prompt_version: str
+```
+
+Every node receives the full state dict and returns a partial dict that is merged
+into it. This is LangGraph's reducer pattern — nodes do not mutate state, they
+return updates.
+
+**Graph topology:**
+```
+START → [retrieve] → [rerank] ──score ≥ threshold──► [generate] → END
+                              └──score < threshold──► [refuse]   → END
+```
+
+**Node implementations (all are closures, not classes):**
+
+`_make_retrieve_node(vector_store, top_k)` returns a closure that calls
+`retrieve(state["question"], vector_store, top_k=top_k)` and returns
+`{"docs": docs}`.
+
+`_make_rerank_node(cross_encoder, top_n)` is where scoring happens. It calls
+`cross_encoder.predict(pairs)`, sorts descending, extracts
+`top_score = float(scored[0][0])`, and returns `{"docs": ranked_docs,
+"top_score": top_score}`. The score is stored in state here so the confidence
+router can read it on the next edge without re-running the model.
+
+`_make_generate_node(llm)` creates an LCEL sub-pipeline
+(`RAG_PROMPT | llm | StrOutputParser()`) at build time (not at call time). On
+each invocation it formats context from `state["docs"]` using
+`_format_context(docs)` which prepends `[Source: filename, Page N]` to each
+chunk, then calls `.invoke()` synchronously.
+
+`_refuse_node` is a plain function (no closure needed — it has no captured
+dependencies). It returns the canned refusal text and sets `refused=True`
+without calling the LLM.
+
+**`_make_confidence_router(threshold)`:** Returns an edge function returning the
+literal string `"generate"` or `"refuse"`. LangGraph routes to the node whose
+name matches the string. The mapping
+`{"generate": "generate", "refuse": "refuse"}` in `add_conditional_edges` is
+explicit rather than implicit — it makes the routing table visible in the build
+function.
+
+**Critical detail — `run_rag_graph` initialises all state keys:**
+```python
+initial_state: RAGState = {
+    "question": question,
+    "docs": [],
+    "top_score": 0.0,
+    "answer": "",
+    "sources": [],
+    "refused": False,
+    "prompt_version": PROMPT_VERSION,
+}
+```
+If any key is missing at `graph.invoke()` time, LangGraph raises a `KeyError`
+during node execution when a downstream node reads a key that was never set by
+an upstream node. The `TypedDict` annotation does not enforce completeness at
+runtime — you must initialise every key explicitly.
+
+**`GraphAnswer` dataclass:** The public return type of `run_rag_graph`. It
+isolates callers from the internal `RAGState` TypedDict. `app.py`,
+`scripts/smoke_test_phase2.py`, `eval/evaluate.py`, and `api/main.py` all
+import `GraphAnswer` and never touch `RAGState` directly.
+
+---
+
+#### 4d. Qdrant Hybrid Indexing — `src/quaestor/ingestion/indexer.py`
+
+**Why Qdrant alongside Chroma?** ChromaDB supports dense similarity search only.
+Financial documents contain exact tokens — ticker symbols (`AAPL`), GAAP line
+items (`"operating lease right-of-use asset"`), regulation references
+(`"ASC 842"`) — that dense embeddings handle poorly. nomic-embed-text learns
+semantic similarity, not exact lexical overlap. BM25 (sparse retrieval) excels
+at exact token matching. Hybrid search combines both signals with Reciprocal
+Rank Fusion.
+
+**The four-piece Qdrant initialisation problem:**
+```python
+# This does NOT work:
+store = QdrantVectorStore.from_documents(
+    documents=chunks,
+    embedding=embeddings,
+    client=client,        # ← ignored; creates its own internal QdrantClient
+    ...
+)
+```
+`from_documents` creates its own internal client. The `client` parameter is
+passed to `QdrantClient.__init__` positionally, which raises:
+`TypeError: Client.__init__() got an unexpected keyword argument 'client'`.
+
+The correct pattern:
+```python
+# 1. Create client explicitly
+client = QdrantClient(":memory:")  # or url=settings.qdrant_url
+
+# 2. Create collection explicitly with correct vector configs
+client.create_collection(
+    collection_name=name,
+    vectors_config=VectorParams(size=768, distance=Distance.COSINE),
+    sparse_vectors_config={
+        "langchain-sparse": SparseVectorParams(
+            index=SparseIndexParams(on_disk=False)
+        )
+    },
+)
+
+# 3. Build store directly — use __init__, not from_documents
+store = QdrantVectorStore(
+    client=client,
+    collection_name=name,
+    embedding=embeddings,
+    sparse_embedding=sparse_embeddings,
+    retrieval_mode=RetrievalMode.HYBRID,
+)
+
+# 4. Add documents separately
+store.add_documents(documents=chunks, ids=ids)
+```
+
+**Two Qdrant naming conventions that must match:**
+
+The unnamed dense vector: `QdrantVectorStore` uses `vector_name=""` (empty string)
+by default. The collection must be created with
+`vectors_config=VectorParams(...)` (the unnamed form), not
+`vectors_config={"dense": VectorParams(...)}` (the named form). If you use the
+named form, the store cannot find its own vectors and raises
+`QdrantVectorStoreError: Collection does not have a vector named ''`.
+
+The sparse vector name: `QdrantVectorStore` hardcodes `sparse_vector_name=
+"langchain-sparse"`. The collection's `sparse_vectors_config` dict must use
+exactly the key `"langchain-sparse"`. Any other name — including the obvious
+`"sparse"` — causes `QdrantVectorStoreError` at upsert time. This is not
+documented in the Qdrant client docs; it is an internal convention in the
+`langchain-qdrant` package.
+
+**Vector size probe:** The dense vector dimension depends on the embedding model.
+nomic-embed-text returns 768-dimensional vectors; another model might return 384
+or 1536. Rather than hardcoding:
+```python
+sample_vec = embeddings.embed_query(chunks[0].page_content[:50])
+_create_qdrant_collection(client, name, len(sample_vec), retrieval_mode)
+```
+This probe runs on the first 50 chars of the first chunk (fast) and handles any
+embedding model automatically.
+
+---
+
+#### 4e. Document ID Upgrade — `_doc_id` in `indexer.py`
+
+Phase 1 ID:
+```python
+raw = f"{source}::page={page}::start={start}"
+```
+
+Phase 2 ID:
+```python
+raw = f"{source}::page={page}::start={start}::parent={parent_id}::ci={chunk_index}"
+```
+
+The Phase 1 key was sufficient for fixed-size chunks because `start_index` is an
+absolute offset within the source document — two chunks on the same page always
+have different start positions. For hierarchical child chunks, `start_index` is
+the offset within the *parent chunk*, not the document. Two children that are
+both the first child of different parents on the same page (parent A starting at
+position 0, parent B starting at position 1024) both produce children with
+`start_index=0`. They hash identically under the Phase 1 scheme. This produced
+87 duplicate UUIDs in a 1110-chunk AAPL 10-K index, which Chroma's upsert
+correctly rejected with `DuplicateIDError`.
+
+---
+
+#### 4f. PII Guardrail — `src/quaestor/guardrails/input.py`
+
+**Why this matters for financial QA:** An auditor working with a client file
+might paste a raw document excerpt into the query box. That excerpt could
+contain an individual's name, a social security number, or an internal account
+number. The query is sent over HTTPS to Groq's inference servers in the US.
+This is a GDPR violation in most EU jurisdictions if the data is a real person's
+PII.
+
+The guardrail runs before the query reaches the LLM:
+```python
+entities = detect_pii(question, analyzer=analyzer)
+if entities:
+    result = redact_pii(question, analyzer=analyzer, anonymizer=anonymizer)
+    question = result.redacted_text
+    # proceed with redacted question
+```
+
+**Implementation:** Microsoft Presidio combines two detection mechanisms:
+- `PatternRecognizer`: regex rules for email, phone, US SSN, credit card, IP
+  address, US bank number, IBAN. These have near-100% precision.
+- spaCy NER model: trained entity recognition for PERSON, ORG, LOCATION.
+  Confidence scores are calibrated; default threshold is 0.5.
+
+**The `en_core_web_sm` requirement:** `AnalyzerEngine()` default init calls:
+```python
+subprocess.run(["python", "-m", "spacy", "download", "en_core_web_lg"])
+```
+In a `uv`-managed venv there is no `python -m pip` available. The download
+fails silently and the engine crashes on first use. The fix requires two steps:
+1. `uv pip install en_core_web_sm` — uv exposes a pip-compatible interface
+2. Explicit `NlpEngineProvider` configuration:
+```python
+provider = NlpEngineProvider(nlp_configuration={
+    "nlp_engine_name": "spacy",
+    "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
+})
+engine = AnalyzerEngine(nlp_engine=provider.create_engine())
+```
+The small model (`en_core_web_sm`) misses some PERSON entities compared to
+the large model, but the pattern recognizers for email/SSN/credit card are
+model-independent and work identically.
+
+**Return types:**
+```python
+@dataclass
+class PiiEntity:
+    entity_type: str   # "PERSON", "EMAIL_ADDRESS", etc.
+    start: int         # character offset start
+    end: int           # character offset end (exclusive)
+    score: float       # Presidio confidence [0, 1]
+    text: str          # the detected PII text
+
+@dataclass
+class RedactionResult:
+    redacted_text: str           # query with PII replaced by <ENTITY_TYPE>
+    entities: list[PiiEntity]
+    @property
+    def has_pii(self) -> bool: ...
+```
+
+Redaction replaces each detected span with a fixed-width placeholder:
+`"My name is John Smith"` → `"My name is <PERSON>"`. The placeholder length
+differs from the original span length (7 chars vs 10 chars for "John Smith"),
+which shifts character offsets for all subsequent entities. Presidio handles
+this correctly by processing spans from right to left.
+
+---
+
+#### 4g. NLI Hallucination Check — `src/quaestor/guardrails/output.py`
+
+**Function:** `check_hallucination(answer, context, classifier=None,
+entailment_threshold=0.5)`
+
+The NLI model (`cross-encoder/nli-deberta-v3-small`, ~85 MB) is trained on
+natural language inference: given a premise P and a hypothesis H, classify the
+relationship as ENTAILMENT, NEUTRAL, or CONTRADICTION.
+
+Applied to hallucination detection:
+- Premise = the retrieved context chunks
+- Hypothesis = the LLM-generated answer
+
+If `P(ENTAILMENT) < 0.5`, the answer introduces claims that cannot be
+verified from the context — definition of hallucination.
+
+```python
+raw = classifier({"text": premise[:1800], "text_pair": hypothesis[:1800]})
+# Normalise nested list format
+if raw and isinstance(raw[0], list):
+    raw = raw[0]
+scores = {item["label"].upper(): item["score"] for item in raw}
+entailment = scores.get("ENTAILMENT", 0.0)
+is_hallucination = entailment < entailment_threshold
+```
+
+The 1800-char truncation is a 512-token approximation (4 chars ≈ 1 token,
+leaving margin for the SEP tokens). Sending more than 512 tokens to DeBERTa
+silently truncates at the model level, producing scores based on partial text.
+
+**`NLIClassifier` Protocol:**
+```python
+@runtime_checkable
+class NLIClassifier(Protocol):
+    def __call__(self, inputs: dict[str, str], **kwargs) -> list[dict[str, float]]: ...
+```
+Tests inject `FakeNliClassifier(label="ENTAILMENT", score=0.95)` to control
+the `is_hallucination` outcome without downloading the model.
+
+---
+
+#### 4h. FastAPI Endpoints — `src/quaestor/api/main.py`
+
+Three endpoints:
+
+**`GET /health`**: Returns `{"status": "ok", "version": "0.1.0",
+"vector_store_backend": "chroma|qdrant"}`. No dependencies required.
+
+**`POST /ask`**: Synchronous endpoint. Full pipeline:
+1. PII redaction (`check_pii=True` by default)
+2. `run_rag_graph(graph, question)` → `GraphAnswer`
+3. Optional NLI check (`check_hallucination=False` by default, slow)
+Returns `AskResponse` with all fields.
+
+**`POST /ask/stream`**: Streaming endpoint using Server-Sent Events. The
+streaming implementation bypasses the LangGraph state machine entirely and
+calls the underlying components directly:
+```python
+docs = retrieve(question, vector_store, top_k=request.top_k)
+ranked = rerank(question, docs, cross_encoder=cross_encoder)
+# confidence check
+async for chunk in (RAG_PROMPT | llm | StrOutputParser()).astream(...):
+    yield _sse({"type": "token", "content": chunk})
+yield _sse({"type": "sources", "content": sources})
+yield _sse({"type": "done"})
+```
+This is a design tradeoff: the synchronous `run_rag_graph` could be adapted
+to stream, but that would require making every LangGraph node async-aware.
+The simpler approach is to stream at the endpoint level. The tradeoff is that
+the streaming endpoint duplicates the confidence gate logic from the graph — a
+maintenance risk if the threshold changes and only one path is updated.
+
+**Dependency injection pattern:**
+```python
+def get_vector_store(): ...
+def get_llm(): ...
+def get_cross_encoder(): ...
+def get_analyzer(): ...
+def get_anonymizer(): ...
+def get_nli_classifier(): ...
+
+def get_rag_graph(
+    vector_store=Depends(get_vector_store),
+    llm=Depends(get_llm),
+    cross_encoder=Depends(get_cross_encoder),
+): ...
+```
+
+Tests use `app.dependency_overrides`:
+```python
+app.dependency_overrides[get_vector_store] = lambda: FakeVectorStore()
+app.dependency_overrides[get_llm] = lambda: FakeLLM()
+```
+This replaces the dependency for the duration of the test without patching
+the module. It is the correct FastAPI pattern for integration testing.
+
+---
+
+#### 4i. RAGAS Evaluation Harness — `eval/evaluate.py`
+
+**Key objects:**
+```python
+@dataclass
+class GoldenQuestion:
+    id: str             # "Q01"…"Q20"
+    type: str           # "factual" | "multi_hop" | "unanswerable"
+    question: str
+    ground_truth: str
+    source_pages: list[int]
+    notes: str
+
+@dataclass
+class EvaluationSample:
+    question: str
+    ground_truth: str
+    answer: str
+    retrieved_contexts: list[str]
+    refused: bool = False
+    question_type: str = "factual"
+```
+
+**Pipeline:** `load_golden_dataset` → `run_pipeline_on_dataset` (runs the
+full RAG graph on each question and collects contexts) → `to_ragas_dataset`
+(converts to `EvaluationDataset`) → `run_ragas_evaluation` (calls
+`ragas.evaluate()`).
+
+**RAGAS 0.4.x import path:**
+```python
+# Old (raises DeprecationWarning in 0.4.3):
+from ragas.metrics import faithfulness, answer_relevancy
+
+# Correct:
+from ragas.metrics.collections import (
+    faithfulness, answer_relevancy, context_precision, context_recall
+)
+```
+
+**Golden dataset ground truths** were anchored to smoke-test-verified figures
+from the AAPL FY2025 10-K:
+- Net sales FY2025: $416,161M
+- Net income FY2025: $112,010M | FY2024: $93,736M | FY2023: $96,995M
+- 20 questions: 8 factual, 7 multi_hop, 5 unanswerable
+- `source_pages` is always `[]` for unanswerable questions (validated by
+  `test_unanswerable_have_empty_source_pages`)
+
+The rule: never modify `eval/golden_dataset.json` after creation. LLM-generated
+pseudo-truths that are then scored against LLM-generated answers will always
+produce high RAGAS faithfulness — measuring nothing.
+
+---
+
+### 5. New Failure Modes Introduced
+
+**F1 — `start_index` collision on hierarchical children (discovered live):**
+The Phase 1 `_doc_id` used `source + page + start_index` as its hash key.
+For hierarchical children, `start_index` is the offset *within the parent*,
+not the document. First-children of all parents share `start_index=0`. On an
+AAPL 10-K with 1110 chunks, this produced 87 UUID collisions. Chroma's upsert
+raised `DuplicateIDError`. Fixed by including `parent_id + chunk_index` in the
+hash. But the fix changes all IDs for hierarchical chunks — any existing Chroma
+collection indexed with the old scheme will have orphaned points if re-indexed
+with the new scheme.
+
+**F2 — Confidence threshold is a hyperparameter with no calibration:**
+The default `reranker_confidence_threshold=0.0` was chosen empirically from the
+live smoke test: Q1 (net sales) scored 3.91, Q3 (net income) scored 3.75, and
+both were clearly answerable. Q2 (risk factors) scored -2.07 against chunks that
+were quantitative tables, not the textual risk section. The threshold 0.0 is a
+heuristic. It will over-refuse on questions whose answer lives in sections that
+embed poorly (dense tables, boilerplate legalese) and under-refuse on questions
+where a tangentially related chunk scores high.
+
+**F3 — The streaming endpoint duplicates the confidence gate:**
+`POST /ask/stream` reimplements the retrieve → rerank → confidence-check →
+generate sequence directly, bypassing `run_rag_graph`. If the confidence
+threshold is changed in settings, both `graph.py` and `main.py` must be updated
+in sync. There is no structural guarantee of this. A divergence between the two
+paths would make the streaming endpoint behave differently from the sync endpoint
+for the same query.
+
+**F4 — NLI hallucination check uses generated answer as its own context proxy:**
+In `api/main.py`, the hallucination check receives:
+```python
+context_proxy = " ".join(graph_answer.sources) or graph_answer.answer
+```
+`graph_answer.sources` is a list of file paths (e.g. `["aapl-20250927.htm"]`),
+not the actual retrieved chunk texts. The NLI model is therefore checking whether
+the answer is entailed by a list of filenames. This is structurally wrong. The
+check runs but its output is meaningless until `GraphAnswer` stores the actual
+context strings (commented in the code: "A future improvement stores the context
+in GraphAnswer").
+
+**F5 — `en_core_web_sm` misses some PII that `en_core_web_lg` would catch:**
+The downgrade to the small spaCy model was required by the uv/pip constraint.
+`en_core_web_sm` has lower PERSON recall on short or ambiguous names. A name
+like "Tim Cook" in "Tim Cook announced..." is correctly caught. A name like
+"Pat" alone is not. For a compliance-grade deployment this gap matters. The
+fix is to resolve the pip-in-uv-venv issue (already solvable: `uv pip install`
+works; the problem was `subprocess.run(["pip", ...])` inside Presidio) and
+switch back to `en_core_web_lg`.
+
+**F6 — Qdrant is built but not used in the live smoke test:**
+The Qdrant path (`build_qdrant_index`, `load_qdrant_index`) is tested via unit
+tests with an in-memory Qdrant client (`QdrantClient(":memory:")`). The live
+smoke test uses ChromaDB. The Qdrant path has never run against a real
+`docker run -p 6333:6333 qdrant/qdrant` instance.
+
+---
+
+### 6. Observed Improvements
+
+**Q1 (net sales, exact figure):** Phase 1 returned the correct answer, Phase 2
+also returns it with the same citation accuracy. No visible improvement here —
+single-value lookups don't require the parent context window.
+
+**Q2 (risk factors, broad):** Phase 2 with `-5.0` threshold answered with
+"FX, interest rate, credit risk (cited Pages 30)" using child chunks that
+happened to contain the quantitative risk disclosures. Phase 1 would have
+returned similar content. The full textual risk factor section was not retrieved
+because it is a dense narrative section that embeds differently from the quantitative
+tables. The benefit of hierarchical chunking on this question type requires Phase 3
+improvements (better retrieval top-k, parent context injection at the prompt level).
+
+**Refusal gate:** The confidence gate correctly refused "What is Apple's
+projected revenue for fiscal year 2030?" (a question with no answer in the
+filing) when the threshold was set to 999.0. In normal operation at 0.0, any
+question scoring below 0.0 is refused — which in the smoke test included the
+risk factors question (score -2.07), not just unanswerable ones. Threshold
+calibration against the 20-question golden dataset is needed before declaring
+the ≥95% refusal rate target met.
+
+**PII redaction:** "My name is John Smith. What was Apple's revenue?" becomes
+"My name is <PERSON>. What was Apple's revenue?" with confidence 0.85 for
+the PERSON entity. The LLM receives the redacted question. This is the correct
+behavior for a compliance-oriented pipeline.
+
+---
+
+### 7. Unexpected Discoveries
+
+**The `QdrantVectorStore.from_documents` trap** is the most important. It is
+documented nowhere in langchain-qdrant. The class has a `client` parameter. The
+method appears to accept it. It doesn't forward it correctly. Three hours of
+debugging traced the error to the langchain-qdrant source where `from_documents`
+calls `QdrantClient(**kwargs)` instead of using the passed client. The fix (use
+`__init__` directly) is not intuitive because `from_documents` is the advertised
+pattern in all langchain documentation.
+
+**LangGraph `TypedDict` does not validate at runtime.** A `TypedDict` is a
+type hint, not a runtime constraint. If you define a state with 7 keys and
+initialise only 4 of them, LangGraph will not raise until a node tries to read
+a key that was never set. The error message is a plain Python `KeyError` with no
+reference to state or graph structure. The defensive pattern is to always
+initialise all keys explicitly in `run_rag_graph`, even with empty/zero defaults.
+
+**The cross-encoder score for "risk factors" was -2.07** against chunks from the
+quantitative sections. This reveals a real retrieval failure: the 10-K risk
+factors section (usually ~30 pages of narrative text) does not embed near the top
+of a similarity search for "What are the primary risk factors?" — because the
+narrative chunks do not contain the exact phrase "risk factor" repeatedly; they
+contain specific descriptions of risks. The cross-encoder confirms this: the
+retrieved chunks (numerical tables) score very low against the question. Phase 3
+will need to address this by increasing top-k from 5 to 20 for broad questions,
+or by implementing query expansion.
+
+**HuggingFace `pipeline("text-classification", top_k=None)` returns different
+shapes** across versions. Some return `[{"label": ..., "score": ...}]`
+(flat list). Others return `[[{"label": ..., "score": ...}]]` (nested list).
+The nesting appears when the pipeline wraps multiple inputs in a batch
+dimension even for single-input calls. The normalization:
+```python
+if raw and isinstance(raw[0], list):
+    raw = raw[0]
+```
+handles both cases silently.
+
+**The system prompt template contains `[Source: <filename>, Page <n>]`** as an
+example in its instruction text. A test that counts occurrences of `"[Source:"`
+in the LLM output to verify how many source chunks were cited will always see
+at least one occurrence from the template regardless of the actual answer — the
+FakeLLM echoes the full prompt in tests. The correct assertion is to check the
+actual content of the retrieved chunks, not substrings of the output.
+
+---
+
+### 8. Mental Model for Future Engineers
+
+**Retrieval in Phase 2 is two-staged and asymmetric.** The first stage (dense
+similarity) is fast but coarse — it selects candidates. The second stage
+(cross-encoder) is slow but precise — it ranks them. The two stages use
+fundamentally different representations. The first encodes independently; the
+second encodes jointly. You cannot combine them into one step without losing the
+speed advantage of the first or the precision of the second.
+
+**The cross-encoder score is not a probability.** It is a raw logit. A score
+of 3.5 does not mean 97% confident. What matters is its *relative* ordering and
+its *absolute* position relative to the threshold. The threshold 0.0 was chosen
+because the logit distribution of the MiniLM model for clearly relevant documents
+centers around +2 to +5, and for clearly irrelevant documents around -3 to -1.
+Zero is a rough decision boundary, not a statistical significance level.
+
+**The confidence gate is a first-order refusal mechanism, not a correctness
+mechanism.** It gates on whether retrieval found something relevant. It does not
+verify whether the LLM's answer is factually correct. That is what the NLI check
+does — but only approximately, and currently only when `check_hallucination=True`
+is explicitly passed. In the default `POST /ask` flow, neither gate is sufficient
+alone: you can have high retrieval confidence but a hallucinated answer, or a
+correct answer from a low-scoring chunk.
+
+**`GraphAnswer` is the contract between the pipeline and the outside world.**
+All callers — `app.py`, `api/main.py`, `eval/evaluate.py`,
+`scripts/smoke_test_phase2.py` — import `GraphAnswer` and nothing else from
+`graph.py`. `RAGState` is an implementation detail. If you change the internal
+graph topology (add a node, change routing), callers notice only if `GraphAnswer`
+fields change. Keep `GraphAnswer` stable; change `RAGState` freely.
+
+**Dependency injection via Protocol is the offline testing strategy.** The rule
+is: any object that uses an external resource (model, database, API) must accept
+an injectable alternative via a `Protocol`. `CrossEncoderProtocol`,
+`NLIClassifier`, and FastAPI `Depends` all follow this pattern. Tests never
+touch a real model. The 297 tests run in 10 seconds on any machine with no
+network, no GPU, no Ollama, no Groq key. If a test requires a real service to
+pass, it is not a unit test — it is an integration test and should be in
+`tests/integration/`.
+
+---
+
+### 9. What Remains Unsolved
+
+**Threshold calibration:** The `reranker_confidence_threshold=0.0` default is
+a guess. It needs to be calibrated against the 20-question golden dataset:
+run the pipeline at multiple thresholds (-3.0, -1.0, 0.0, 1.0, 2.0), measure
+F1 on the refusal decision (true positive = correctly refused an unanswerable
+question; false positive = incorrectly refused an answerable one), and pick the
+threshold that maximizes F1. This has not been done.
+
+**Parent context injection at generation time:** `_chunk_hierarchical` stores
+`parent_content` in every child's metadata. The generation node uses
+`doc.page_content` (the 256-char child text), not `metadata["parent_content"]`
+(the 1024-char parent text). The parent context is stored but not used. This is
+the central mechanism of Hypothesis A — and it has not been activated. The fix
+requires modifying `_format_context` in `graph.py` to use `parent_content` when
+the chunk is at `chunk_level == "child"`.
+
+**Qdrant live integration test:** The Qdrant path has 17 unit tests all using
+`QdrantClient(":memory:")`. It has never been tested against a real running
+Qdrant Docker instance. The hybrid BM25 + dense path is the production target
+but is not yet exercised end-to-end.
+
+**Streaming endpoint confidence gate divergence:** `POST /ask/stream`
+reimplements the confidence check. It reads from `settings.reranker_confidence_
+threshold` directly (not from the graph's captured threshold). This is
+inconsistent: if you call `build_rag_graph(confidence_threshold=2.0)`, the sync
+endpoint uses 2.0, the streaming endpoint uses whatever is in settings. Should be
+unified.
+
+**NLI context proxy is wrong:** `graph_answer.sources` is a list of file paths,
+not chunk texts. The hallucination check in `api/main.py` is checking the answer
+against filenames. This produces meaningless NLI scores. The fix is to add a
+`context` field to `GraphAnswer` that stores the formatted context string from
+the generate node.
+
+**The 5 unanswerable questions in the golden dataset use threshold 999.0 to
+force refusal in the smoke test.** Under normal operation at threshold 0.0,
+some unanswerable questions might score above 0.0 (because the corpus contains
+tangentially related chunks), generating an incorrect answer rather than a
+refusal. The ≥95% refusal rate target from the spec has not been measured.
+
+**`unanswerable` questions in RAGAS evaluation:** When `refused=True`, the
+pipeline returns the canned refusal text as the answer. RAGAS's answer relevancy
+metric will score this poorly (the refusal is not "relevant" to the question),
+and faithfulness will score it perfectly (the refusal text is factually grounded
+in nothing from the context — but RAGAS may treat it as vacuously faithful).
+The evaluation harness needs to handle refused samples separately, scoring only
+the refusal decision (was it correct?) rather than feeding refusal text to
+RAGAS metrics designed for actual answers.
+
+---
+
+### Inventory of new files and functions
+
+```
+src/quaestor/config.py
+  VectorStoreBackend(str, Enum)           — CHROMA | QDRANT
+  Settings.reranker_model                 — "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  Settings.reranker_confidence_threshold  — 0.0
+  Settings.vector_store_backend           — VectorStoreBackend.CHROMA
+  Settings.qdrant_url                     — "http://localhost:6333"
+  Settings.qdrant_collection_name         — "quaestor"
+
+src/quaestor/ingestion/chunker.py
+  ChunkStrategy.SEMANTIC / .HIERARCHICAL  — added to enum
+  _chunk_semantic(docs, breakpoint_threshold_type, embeddings)
+  _chunk_hierarchical(docs, parent_chunk_size, child_chunk_size, child_chunk_overlap)
+  _parent_id(parent, index)               — 12-char hex parent reference
+  chunk_documents(…, strategy, parent_chunk_size, child_chunk_size)
+
+src/quaestor/ingestion/indexer.py
+  _doc_id(doc, index)                     — upgraded: includes parent_id + chunk_index
+  _qdrant_client(url)                     — returns QdrantClient(":memory:") or url
+  _get_sparse_embeddings()                — FastEmbedSparse("Qdrant/bm25")
+  _create_qdrant_collection(client, name, vector_size, retrieval_mode)
+  build_qdrant_index(chunks, …, qdrant_client)
+  load_qdrant_index(…, qdrant_client)
+
+src/quaestor/retrieval/reranker.py        — NEW FILE
+  CrossEncoderProtocol                    — @runtime_checkable Protocol
+  _default_cross_encoder()               — loads settings.reranker_model
+  rerank(query, docs, cross_encoder, top_n)
+
+src/quaestor/retrieval/graph.py           — NEW FILE
+  RAGState(TypedDict)                     — 7-field graph state
+  GraphAnswer(dataclass)                  — public return type
+  _make_retrieve_node(vector_store, top_k)
+  _make_rerank_node(cross_encoder, top_n)
+  _make_generate_node(llm)
+  _refuse_node(state)
+  _make_confidence_router(threshold)
+  _format_context(docs)
+  build_rag_graph(vector_store, llm, cross_encoder, top_k, top_n, confidence_threshold)
+  run_rag_graph(graph, question)
+
+src/quaestor/guardrails/input.py          — NEW FILE
+  PiiEntity(dataclass)                    — entity_type, start, end, score, text
+  RedactionResult(dataclass)              — redacted_text, entities, has_pii
+  _default_analyzer()                     — Presidio + en_core_web_sm
+  _default_anonymizer()                   — AnonymizerEngine
+  detect_pii(text, entities, min_score, analyzer, language)
+  redact_pii(text, entities, min_score, analyzer, anonymizer, language)
+
+src/quaestor/guardrails/output.py         — NEW FILE
+  NLIClassifier                           — @runtime_checkable Protocol
+  HallucinationResult(dataclass)          — is_hallucination, entailment_score, …
+  _default_classifier()                   — transformers pipeline, nli-deberta-v3-small
+  check_hallucination(answer, context, classifier, entailment_threshold, model_name)
+
+src/quaestor/api/schemas.py               — NEW FILE
+  HallucinationCheck(BaseModel, frozen)
+  PiiReport(BaseModel, frozen)
+  AskRequest(BaseModel, frozen)           — question, top_k, check_pii, check_hallucination
+  AskResponse(BaseModel, frozen)          — question, answer, sources, refused, pii, hallucination
+  HealthResponse(BaseModel, frozen)
+
+src/quaestor/api/main.py                  — NEW FILE
+  lifespan(app)                           — asynccontextmanager startup/shutdown
+  app = FastAPI(…)
+  get_vector_store() / get_llm() / get_cross_encoder()
+  get_analyzer() / get_anonymizer() / get_nli_classifier()
+  get_rag_graph(vector_store, llm, cross_encoder)
+  GET  /health  → HealthResponse
+  POST /ask     → AskResponse (sync)
+  POST /ask/stream → StreamingResponse SSE
+
+eval/golden_dataset.json                  — NEW FILE
+  20 questions: 8 factual, 7 multi_hop, 5 unanswerable
+  All factual ground truths verified against live AAPL FY2025 10-K smoke test
+
+eval/evaluate.py                          — NEW FILE
+  GoldenQuestion(dataclass)
+  EvaluationSample(dataclass)
+  load_golden_dataset(path)               — validates types, rejects empty fields
+  build_evaluation_sample(golden, answer, retrieved_contexts, refused)
+  to_ragas_dataset(samples)               — → ragas.EvaluationDataset
+  run_pipeline_on_dataset(questions, vector_store, llm, cross_encoder, top_k, …)
+  run_ragas_evaluation(samples, llm, embeddings, metrics)
+  save_results(results, output_path)
+
+scripts/evaluate.py                       — NEW FILE
+  CLI: --dataset, --output, --top-k, --limit, --no-rerank
+
+app.py                                    — REWRITTEN
+  _get_cross_encoder()   @st.cache_resource
+  _get_nli_classifier()  @st.cache_resource
+  _get_pii_engines()     @st.cache_resource
+  _load_existing_index() @st.cache_resource
+  _get_rag_graph(vs, confidence_threshold)  — cached in session_state by (id(vs), threshold)
+  Sidebar: strategy selector, chunk_size/overlap, confidence slider, PII/NLI toggles
+  Main:    PII warning → refused info box | answer + score badge + NLI badge + sources
+
+scripts/smoke_test_phase2.py              — NEW FILE
+  8-step live test: download → load → hierarchical chunk → ChromaDB index →
+  build graph → Q&A (3 questions) → refusal gate → PII guardrail
+```
+
+**Test suite:** 297 total, 0 failed, 10.2 s.
+
+| File | Tests |
 |---|---|
-| Hierarchical chunking (1024/256) | 1110 child chunks, all with `parent_content` |
-| ChromaDB index | 1110 chunks embedded by nomic-embed-text in 24 s |
-| Q1 — Total net sales | $416,161 million (score 3.91, cited Page 27) |
-| Q2 — Primary risk factors | FX, interest rate, credit risk (score -2.07) |
-| Q3 — Net income FY2025 vs 2024 | Sources found (score 3.75) |
-| Refusal test (threshold 999.0) | `refused=True` ✅ |
-| PII guardrail ("John Smith") | PERSON detected, redacted to `<PERSON>` ✅ |
-
----
-
-### Decisions made
-
-**LangGraph `StateGraph` with `TypedDict` state**
-`RAGState` carries `question`, `docs`, `top_score`, `answer`, `sources`,
-`refused`, `prompt_version`.  Each node is a pure function that merges a
-partial dict into state.  The confidence router is an edge function
-returning `"generate"` or `"refuse"`.  Returning a `GraphAnswer` dataclass
-from `run_rag_graph` isolates callers from the internal `TypedDict`.
-
-**Cross-encoder scoring inline in the rerank node**
-The rerank node calls `cross_encoder.predict([[query, doc.page_content] for doc in docs])`,
-sorts descending, trims to `top_n`, and stores `max(scores)` as `top_score`
-in state.  This means the confidence gate can branch immediately on the next
-edge without re-scoring.
-
-**`CrossEncoderProtocol` for offline testing**
-Any object with `.predict(list[list[str]]) -> list[float]` satisfies the
-protocol.  Unit tests inject a `FakeHighCrossEncoder` (all 5.0) or
-`FakeLowCrossEncoder` (all -10.0) to test the confidence gate branches
-without downloading the 80 MB MiniLM weights.
-
-**`QdrantVectorStore.__init__` + manual `create_collection`**
-`QdrantVectorStore.from_documents(client=...)` does not forward the
-`client` kwarg — it silently creates its own internal `QdrantClient` and
-ignores the injected one.  Result: `TypeError: Client.__init__() got an
-unexpected keyword argument 'client'`.  The fix is to use
-`QdrantVectorStore.__init__(client=client, ...)` directly after calling
-`client.create_collection(...)` to pre-create the collection with the
-correct vector configs.
-
-**Qdrant sparse vector name must be `"langchain-sparse"`**
-`langchain-qdrant`'s `QdrantVectorStore` defaults to
-`sparse_vector_name="langchain-sparse"`.  Creating the Qdrant collection
-with key `"sparse"` causes a `QdrantVectorStoreError` at upsert time because
-the store looks for `"langchain-sparse"` and cannot find it.
-
-**Qdrant unnamed dense vector**
-`QdrantVectorStore` defaults to `vector_name=""` (unnamed vector).
-The collection must be created with `vectors_config=VectorParams(...)`
-(not `vectors_config={"dense": VectorParams(...)}`).
-
-**UUID-formatted MD5 IDs for both Chroma and Qdrant**
-`_doc_id` originally returned a 32-char hex MD5.  Qdrant raised
-`ValueError: Point id X is not a valid UUID`.  Fix: `str(uuid.UUID(hex=h))`.
-The UUID format is accepted by both backends and preserves the determinism
-guarantee.
-
-**`_doc_id` must include `parent_id` + `chunk_index`**
-Hierarchical child chunks store `start_index` relative to their parent,
-not to the document.  Two first-children (chunk_index=0) on the same page
-from different parents get the same `source::page=N::start=0` hash →
-duplicate UUIDs → Chroma `DuplicateIDError`.  Fix: extend the hash key to
-`…::parent=<parent_id>::ci=<chunk_index>`.
-
-**Presidio requires `en_core_web_sm` + explicit `NlpEngineProvider`**
-`AnalyzerEngine()` default init downloads `en_core_web_lg` via `pip`, which
-fails inside a `uv`-managed venv (`No module named pip`).  Fix:
-`uv pip install en_core_web_sm` (uv exposes its own pip compat layer), then
-construct with `NlpEngineProvider(nlp_configuration={"nlp_engine_name":
-"spacy", "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}]})`.
-
-**RAGAS 0.4.x import path changed**
-`from ragas.metrics import faithfulness` raises a `DeprecationWarning` in
-RAGAS 0.4.3.  Correct import: `from ragas.metrics.collections import
-faithfulness, answer_relevancy, context_precision, context_recall`.
-
-**NLI pipeline may return nested list**
-Some HuggingFace `pipeline("text-classification")` versions return
-`[[{"label": ..., "score": ...}]]` instead of `[{...}]` when called with
-`top_k=None`.  Fix: `if raw and isinstance(raw[0], list): raw = raw[0]`.
-
-**`[Source:` count test false positive**
-`test_top_n_limits_context` counted `"[Source:"` occurrences in the LLM
-output to verify only one source chunk was used.  The system prompt template
-itself contains the string `[Source: <filename>, Page <n>]` as an example,
-so the count was 2 even with `top_n=1`.  Fix: count unique chunk content
-strings instead.
-
-**FastAPI dependency injection via `app.dependency_overrides`**
-Every heavy resource (vector store, LLM, cross-encoder, PII engines, NLI)
-is wrapped in a `Depends()` provider.  Tests override these with
-`app.dependency_overrides[get_vector_store] = lambda: FakeVectorStore()`.
-This pattern removes every network/GPU call from the test suite while
-exercising the full request/response pipeline.
-
-**SSE streaming via `StreamingResponse` + `astream`**
-`POST /ask/stream` yields newline-terminated `data: <json>\n\n` events:
-`pii`, `token` (one per LangChain stream chunk), `sources`, `done`.
-The caller reconstructs the answer by joining all `token` payloads.
-
-**Golden dataset ground truths anchored to smoke-test figures**
-All factual ground truths in `eval/golden_dataset.json` were written after
-the Phase 1 smoke test confirmed the exact values from the AAPL FY2025 10-K:
-net sales $416,161M, net income $112,010M (FY2025) / $93,736M (FY2024) /
-$96,995M (FY2023).  This prevents evaluation drift from LLM-generated
-pseudo-truths.
-
----
-
-### Problems encountered
-
-| # | Problem | Fix |
-|---|---|---|
-| 1 | `QdrantVectorStore.from_documents` ignores injected `client` kwarg | Use `__init__` directly + `client.create_collection()` |
-| 2 | Qdrant raised `Point id X is not a valid UUID` | Wrap MD5 hex with `str(uuid.UUID(hex=h))` |
-| 3 | Qdrant `QdrantVectorStoreError` on sparse vector name mismatch | Use `"langchain-sparse"` as sparse vector key (langchain-qdrant default) |
-| 4 | Qdrant unnamed dense vector mismatch | Use `vectors_config=VectorParams(...)` (not keyed dict) |
-| 5 | Chroma `DuplicateIDError` — 87 duplicate IDs on hierarchical chunks | Add `parent_id` + `chunk_index` to `_doc_id` hash key |
-| 6 | Presidio `AnalyzerEngine()` calls pip, fails in uv venv | `uv pip install en_core_web_sm` + explicit `NlpEngineProvider` config |
-| 7 | RAGAS `DeprecationWarning` on old import path | Switch to `ragas.metrics.collections` |
-| 8 | NLI pipeline returned `[[{...}]]` instead of `[{...}]` | Flatten: `if isinstance(raw[0], list): raw = raw[0]` |
-| 9 | `[Source:` count test returned 2 with `top_n=1` | Count unique chunk content, not `"[Source:"` occurrences |
-| 10 | Q2 (risk factors) refused by confidence gate at threshold 0.0 | Smoke test Q&A section uses `-5.0`; gate behaviour tested separately at step 7 |
+| `test_reranker.py` | 16 |
+| `test_graph.py` | 23 |
+| `test_qdrant_indexer.py` | 17 |
+| `test_input_guardrail.py` | 23 |
+| `test_output_guardrail.py` | 20 |
+| `test_api.py` | 26 |
+| `test_evaluate.py` | 30 |
+| (Phase 1 tests retained) | 142 |
 
 ---
 
 ### What comes next (Phase 3)
 
-- [ ] CI/CD eval gate: `pytest tests/unit/ && python scripts/evaluate.py --limit 5`
-      on every PR; block merge if RAGAS faithfulness < 0.7
-- [ ] Langfuse self-hosted (Docker Compose) — trace every `run_rag_graph` call
-- [ ] Arize Phoenix span export for retrieval + generation observability
-- [ ] Argilla data labelling integration for HITL feedback on refused questions
-- [ ] Docker Compose full stack (Quaestor API + Qdrant + Langfuse + Argilla)
-- [ ] Expand golden dataset from 20 → 120 questions (add JPMorgan, Goldman filings)
-- [ ] NeMo Guardrails scope enforcement (reject non-financial questions at API layer)
-- [ ] Streamlit eval dashboard — compare Phase 1 vs Phase 2 RAGAS scores visually
+- [ ] **Activate parent context at generation time:** modify `_format_context`
+      in `graph.py` to use `metadata["parent_content"]` for child chunks instead
+      of `page_content`. This is the central unchompleted mechanism of Phase 2.
+      Measure RAGAS before/after.
+- [ ] **Calibrate confidence threshold:** run `scripts/evaluate.py --limit 20`
+      at thresholds -3, -1, 0, 1, 2; measure refusal F1 on the 5 unanswerable
+      questions vs false-refusal rate on the 15 answerable ones.
+- [ ] **Fix NLI context proxy:** add `context: str` field to `GraphAnswer`,
+      populate it in `_make_generate_node`, use it in `api/main.py`.
+- [ ] **Qdrant live integration test:** `docker run -p 6333:6333 qdrant/qdrant`,
+      run `build_qdrant_index` + `load_qdrant_index` + `similarity_search` against
+      a real instance; add to `tests/integration/`.
+- [ ] **CI/CD eval gate:** GitHub Actions workflow on every PR;
+      `pytest tests/unit/` + `python scripts/evaluate.py --limit 5`; block merge
+      if faithfulness < 0.7.
+- [ ] **Langfuse self-hosted:** trace every `run_rag_graph` call from day one;
+      instrument retrieve, rerank, generate nodes as separate spans.
+- [ ] **Expand golden dataset:** 120 questions across AAPL, JPM, JNJ filings;
+      30 hand-written, 70 LLM-generated + manually verified.
+- [ ] **Unify streaming confidence gate:** `POST /ask/stream` must use the same
+      threshold as the compiled graph, not read from settings independently.
 
 ---
 
