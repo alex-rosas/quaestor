@@ -102,6 +102,14 @@ class Settings(BaseSettings):
         default="cross-encoder/ms-marco-MiniLM-L-6-v2",
         description="Sentence-Transformers cross-encoder model for reranking",
     )
+    reranker_confidence_threshold: float = Field(
+        default=0.0,
+        description=(
+            "Minimum cross-encoder score to consider a retrieval result confident. "
+            "Queries whose top-scoring chunk falls below this value receive an "
+            "'unanswerable' refusal instead of an LLM-generated answer."
+        ),
+    )
 
     # --- Data paths ---
     data_raw_dir: Path = Field(
