@@ -36,3 +36,13 @@ docs/**/*.tmp
 
 # Temporary files
 migration-status.txt
+
+# Notebooks - exploratory only, never commit
+notebooks/*.ipynb
+notebooks/**/*.ipynb
+!notebooks/.gitkeep
+
+# Data directories - structure only, never commit actual data
+data/**/*
+!data/.gitkeep
+!data/processed/.gitkeep
