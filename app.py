@@ -1,9 +1,18 @@
-"""Quaestor — Phase 1 Streamlit demo.
+"""Quaestor — Phase 2 Streamlit demo.
 
 Entry point: streamlit run app.py
 
 All business logic lives in src/quaestor/.  This file only orchestrates
 the UI and calls the library functions.
+
+Phase 2 additions over Phase 1
+-------------------------------
+- Chunking strategy selector (fixed / semantic / hierarchical)
+- LangGraph retrieval state machine (retrieve → rerank → confidence gate)
+- Cross-encoder reranking (sentence-transformers, local, no API cost)
+- Input guardrail: Presidio PII detection
+- Confidence-gate refusal (low-score queries get a graceful refusal)
+- Optional NLI hallucination check on the generated answer
 """
 
 from __future__ import annotations
@@ -13,8 +22,7 @@ from pathlib import Path
 import streamlit as st
 
 from quaestor.config import settings
-from quaestor.generation.chain import Answer, build_chain
-from quaestor.ingestion.chunker import chunk_documents
+from quaestor.ingestion.chunker import ChunkStrategy, chunk_documents
 from quaestor.ingestion.indexer import build_index, load_index
 from quaestor.ingestion.loader import load_pdf
 
@@ -31,28 +39,31 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------------------------
-# Session state helpers
+# Cached heavy objects
 # ---------------------------------------------------------------------------
 
-def _get_chain():
-    """Return the cached RagChain from session state, or None."""
-    return st.session_state.get("chain")
+@st.cache_resource(show_spinner="Loading cross-encoder reranker…")
+def _get_cross_encoder():
+    from quaestor.retrieval.reranker import _default_cross_encoder
+    return _default_cross_encoder()
 
 
-def _set_chain(chain) -> None:
-    st.session_state["chain"] = chain
+@st.cache_resource(show_spinner="Loading NLI hallucination checker…")
+def _get_nli_classifier():
+    from quaestor.guardrails.output import _default_classifier
+    return _default_classifier()
 
 
-# ---------------------------------------------------------------------------
-# Indexing logic
-# ---------------------------------------------------------------------------
+@st.cache_resource(show_spinner="Loading PII analyzer…")
+def _get_pii_engines():
+    from quaestor.guardrails.input import _default_analyzer, _default_anonymizer
+    return _default_analyzer(), _default_anonymizer()
+
 
 @st.cache_resource(show_spinner="Loading existing index…")
 def _load_existing_index():
-    """Try to load an existing persisted index. Returns None on failure."""
     try:
         from langchain_ollama import OllamaEmbeddings
-
         embeddings = OllamaEmbeddings(
             model=settings.ollama_embedding_model,
             base_url=settings.ollama_base_url,
@@ -62,8 +73,43 @@ def _load_existing_index():
         return None
 
 
-def _index_uploaded_files(uploaded_files) -> None:
-    """Chunk and index uploaded PDFs into an isolated collection."""
+# ---------------------------------------------------------------------------
+# Session state helpers
+# ---------------------------------------------------------------------------
+
+def _get_vector_store():
+    return st.session_state.get("vector_store")
+
+def _set_vector_store(vs) -> None:
+    st.session_state["vector_store"] = vs
+    # Invalidate cached graph when vector store changes
+    st.session_state.pop("rag_graph", None)
+
+def _get_rag_graph(vs, confidence_threshold: float):
+    """Build (or retrieve cached) LangGraph for the current vector store."""
+    cache_key = ("rag_graph", id(vs), confidence_threshold)
+    if st.session_state.get("_graph_key") != cache_key:
+        from quaestor.retrieval.graph import build_rag_graph
+        graph = build_rag_graph(
+            vector_store=vs,
+            cross_encoder=_get_cross_encoder(),
+            confidence_threshold=confidence_threshold,
+        )
+        st.session_state["rag_graph"] = graph
+        st.session_state["_graph_key"] = cache_key
+    return st.session_state["rag_graph"]
+
+
+# ---------------------------------------------------------------------------
+# Indexing logic
+# ---------------------------------------------------------------------------
+
+def _index_uploaded_files(
+    uploaded_files,
+    strategy: str,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> None:
     tmp_dir = Path(".tmp_uploads")
     tmp_dir.mkdir(exist_ok=True)
 
@@ -78,40 +124,54 @@ def _index_uploaded_files(uploaded_files) -> None:
         if not non_empty:
             st.warning(
                 f"⚠️ **{f.name}** — no text could be extracted. "
-                "This is usually a scanned (image-only) PDF. "
-                "OCR support is not included in Phase 1."
+                "This is usually a scanned (image-only) PDF."
             )
         else:
             all_docs.extend(non_empty)
             progress.progress(
                 (i + 1) / len(uploaded_files),
-                text=f"Loaded {f.name} ({len(non_empty)} pages with text)",
+                text=f"Loaded {f.name} ({len(non_empty)} pages)",
             )
 
     if not all_docs:
         st.error("No readable text found in any uploaded file.")
         return
 
-    # Show a content preview so the user can verify extraction quality
     with st.expander("📄 Extraction preview (first 300 chars)", expanded=False):
         st.text(all_docs[0].page_content[:300])
 
-    progress.progress(1.0, text="Chunking…")
-    chunks = chunk_documents(all_docs, strategy="fixed")
-    st.caption(f"Produced {len(chunks)} chunks from {len(all_docs)} pages.")
+    progress.progress(1.0, text=f"Chunking ({strategy})…")
 
-    progress.progress(1.0, text="Embedding & indexing (this may take a minute)…")
+    try:
+        if strategy == "semantic":
+            from langchain_ollama import OllamaEmbeddings
+            emb = OllamaEmbeddings(
+                model=settings.ollama_embedding_model,
+                base_url=settings.ollama_base_url,
+            )
+            chunks = chunk_documents(all_docs, strategy="semantic", embeddings=emb)
+        else:
+            chunks = chunk_documents(
+                all_docs,
+                strategy=strategy,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+    except Exception as e:
+        st.error(f"Chunking failed: {e}")
+        return
+
+    st.caption(f"Produced **{len(chunks)}** chunks from {len(all_docs)} pages.")
+
+    progress.progress(1.0, text="Embedding & indexing…")
 
     try:
         from langchain_ollama import OllamaEmbeddings
-
         embeddings = OllamaEmbeddings(
             model=settings.ollama_embedding_model,
             base_url=settings.ollama_base_url,
         )
-        # Use an isolated collection so uploaded docs never mix with the
-        # persisted EDGAR index loaded via "Load existing index".
-        vector_store = build_index(
+        vs = build_index(
             chunks,
             collection_name="quaestor_upload",
             embeddings=embeddings,
@@ -119,16 +179,14 @@ def _index_uploaded_files(uploaded_files) -> None:
     except Exception as e:
         st.error(
             f"Embedding failed: {e}\n\n"
-            "Make sure Ollama is running and nomic-embed-text is pulled:\n"
-            "`ollama pull nomic-embed-text`"
+            "Make sure Ollama is running: `ollama pull nomic-embed-text`"
         )
         return
 
-    chain = build_chain(vector_store)
-    _set_chain(chain)
+    _set_vector_store(vs)
     progress.empty()
     st.success(
-        f"✅ Indexed {len(chunks)} chunks from {len(uploaded_files)} file(s). "
+        f"✅ Indexed **{len(chunks)}** chunks from {len(uploaded_files)} file(s). "
         "Ready to answer questions."
     )
 
@@ -139,79 +197,184 @@ def _index_uploaded_files(uploaded_files) -> None:
 
 def main() -> None:
     st.title("📑 Quaestor")
-    st.caption("Financial document intelligence — ask questions, get cited answers.")
+    st.caption(
+        "Financial document intelligence · "
+        "Phase 2: reranking · confidence gate · PII guardrail"
+    )
 
-    # Sidebar — document ingestion
+    # -----------------------------------------------------------------------
+    # Sidebar
+    # -----------------------------------------------------------------------
     with st.sidebar:
-        st.header("Documents")
+        st.header("📂 Documents")
 
-        # Option A: upload PDFs
         uploaded = st.file_uploader(
             "Upload PDF(s)",
             type=["pdf"],
             accept_multiple_files=True,
-            help="Upload SEC filings or regulatory standards.",
         )
+
+        st.subheader("Chunking")
+        strategy = st.selectbox(
+            "Strategy",
+            options=["fixed", "hierarchical", "semantic"],
+            index=0,
+            help=(
+                "**fixed** — baseline overlapping windows\n\n"
+                "**hierarchical** — parent/child split; best for tables\n\n"
+                "**semantic** — embedding-based boundaries (requires Ollama)"
+            ),
+        )
+        col1, col2 = st.columns(2)
+        chunk_size = col1.number_input("Chunk size", 128, 2048, 512, 64)
+        chunk_overlap = col2.number_input("Overlap", 0, 512, 50, 10)
+
         if uploaded:
             if st.button("Index uploaded files", type="primary"):
-                _index_uploaded_files(uploaded)
+                _index_uploaded_files(
+                    uploaded, strategy, chunk_size, chunk_overlap
+                )
 
         st.divider()
 
-        # Option B: load existing index
-        if st.button("Load existing index"):
-            vector_store = _load_existing_index()
-            if vector_store is not None:
-                _set_chain(build_chain(vector_store))
+        if st.button("Load existing EDGAR index"):
+            vs = _load_existing_index()
+            if vs is not None:
+                _set_vector_store(vs)
                 st.success("Index loaded.")
             else:
                 st.warning(
-                    "No existing index found at "
-                    f"`{settings.chroma_persist_dir}`. "
-                    "Upload and index documents first."
+                    f"No index found at `{settings.chroma_persist_dir}`. "
+                    "Run the smoke test first."
                 )
+
+        st.divider()
+
+        st.subheader("⚙️ Phase 2 Settings")
+        confidence_threshold = st.slider(
+            "Confidence threshold",
+            min_value=-5.0,
+            max_value=5.0,
+            value=0.0,
+            step=0.5,
+            help="Cross-encoder score below this → refusal instead of LLM answer.",
+        )
+        check_pii = st.checkbox("PII guardrail", value=True,
+                                help="Detect PII in your question before sending to LLM.")
+        check_hallucination = st.checkbox(
+            "Hallucination check (slow)",
+            value=False,
+            help="NLI check on the answer. Downloads ~85 MB model on first use.",
+        )
 
         st.divider()
         st.caption(
             f"LLM: {settings.llm_provider.value} · "
-            f"Embeddings: {settings.embedding_provider.value} · "
+            f"Embed: {settings.embedding_provider.value} · "
             f"top-k: {settings.retrieval_top_k}"
         )
 
+    # -----------------------------------------------------------------------
     # Main area — Q&A
-    chain = _get_chain()
+    # -----------------------------------------------------------------------
+    vs = _get_vector_store()
 
-    if chain is None:
+    if vs is None:
         st.info(
             "👈 Upload PDFs and click **Index uploaded files**, "
-            "or click **Load existing index** to get started."
+            "or click **Load existing EDGAR index** to get started."
         )
         return
 
     st.subheader("Ask a question")
     question = st.text_input(
         "Question",
-        placeholder="What was Apple's total revenue in FY2023?",
+        placeholder="What was Apple's total net sales in fiscal year 2025?",
         label_visibility="collapsed",
     )
 
     if st.button("Ask", type="primary", disabled=not question):
-        with st.spinner("Thinking…"):
+
+        # --- PII check ---
+        display_question = question
+        if check_pii:
             try:
-                result: Answer = chain.ask(question)
+                analyzer, anonymizer = _get_pii_engines()
+                from quaestor.guardrails.input import detect_pii, redact_pii
+                entities = detect_pii(question, analyzer=analyzer)
+                if entities:
+                    result = redact_pii(question, analyzer=analyzer, anonymizer=anonymizer)
+                    display_question = result.redacted_text
+                    st.warning(
+                        f"⚠️ **PII detected** in your question "
+                        f"({', '.join(sorted({e.entity_type for e in entities}))}). "
+                        "Sending redacted version to the LLM."
+                    )
+                    with st.expander("Redacted question"):
+                        st.code(display_question)
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.caption(f"PII check unavailable: {e}")
+
+        # --- RAG graph ---
+        with st.spinner("Retrieving and generating…"):
+            try:
+                from quaestor.retrieval.graph import run_rag_graph
+                graph = _get_rag_graph(vs, confidence_threshold)
+                graph_answer = run_rag_graph(graph, display_question)
+            except Exception as e:
+                st.error(f"Pipeline error: {e}")
                 return
 
-        st.markdown("### Answer")
-        st.markdown(result.answer)
+        # --- Display answer ---
+        if graph_answer.refused:
+            st.info(
+                "🔍 **Low retrieval confidence** — the retrieved documents "
+                "don't appear relevant enough to answer this question reliably.\n\n"
+                f"> {graph_answer.answer}"
+            )
+        else:
+            st.markdown("### Answer")
+            st.markdown(graph_answer.answer)
 
-        if result.sources:
-            with st.expander("📎 Sources"):
-                for src in result.sources:
-                    st.markdown(f"- `{src}`")
+            # Reranker score badge
+            score_color = "green" if graph_answer.top_score >= 1.0 else \
+                          "orange" if graph_answer.top_score >= 0.0 else "red"
+            st.caption(
+                f"Retrieval confidence: :{score_color}[**{graph_answer.top_score:.2f}**]"
+            )
 
-        st.caption(f"Prompt: {result.prompt_version}")
+            # --- Hallucination check ---
+            if check_hallucination and not graph_answer.refused:
+                with st.spinner("Checking for hallucinations…"):
+                    try:
+                        from quaestor.guardrails.output import check_hallucination
+                        context = " ".join(graph_answer.sources) or graph_answer.answer
+                        h_result = check_hallucination(
+                            answer=graph_answer.answer,
+                            context=context,
+                            classifier=_get_nli_classifier(),
+                        )
+                        if h_result.is_hallucination:
+                            st.warning(
+                                f"⚠️ **NLI check**: answer may not be fully supported "
+                                f"by the retrieved context "
+                                f"(entailment score: {h_result.entailment_score:.2f})"
+                            )
+                        else:
+                            st.success(
+                                f"✅ **NLI check**: answer appears grounded in context "
+                                f"(entailment score: {h_result.entailment_score:.2f})"
+                            )
+                    except Exception as e:
+                        st.caption(f"Hallucination check unavailable: {e}")
+
+            # Sources
+            if graph_answer.sources:
+                with st.expander("📎 Sources"):
+                    for src in graph_answer.sources:
+                        st.markdown(f"- `{src}`")
+
+        st.caption(f"Prompt: {graph_answer.prompt_version}")
 
 
 if __name__ == "__main__":
