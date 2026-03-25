@@ -79,7 +79,7 @@ class TestDefaults:
 
     def test_groq_model_default(self, monkeypatch):
         cfg = fresh_settings(monkeypatch)
-        assert cfg.groq_model == "llama-3.1-70b-versatile"
+        assert cfg.groq_model == "llama-3.3-70b-versatile"
 
     def test_groq_api_key_default_is_empty(self, monkeypatch):
         cfg = fresh_settings(monkeypatch)
