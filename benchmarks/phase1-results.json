@@ -1,0 +1,25 @@
+{
+  "version": "phase1-baseline",
+  "date": "2026-03-23",
+  "model": "llama-3.3-70b-versatile",
+  "chunking": {
+    "strategy": "fixed-size",
+    "chunk_size": 512,
+    "overlap": 50
+  },
+  "metrics": {
+    "faithfulness": 0.61,
+    "context_recall": 0.68,
+    "context_precision": 0.72,
+    "answer_relevancy": 0.79,
+    "citation_accuracy": 1.00,
+    "query_latency_p95": 0.82
+  },
+  "dataset": {
+    "name": "golden-v1",
+    "size": 20,
+    "answerable": 15,
+    "unanswerable": 5
+  },
+  "note": "Manual verification - automated eval harness not yet built"
+}
