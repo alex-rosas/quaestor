@@ -267,10 +267,10 @@ def _chunk_hierarchical(
 
     all_children: list[Document] = []
 
-    for doc in docs:
+    for doc_idx, doc in enumerate(docs):
         parents = parent_splitter.split_documents([doc])
         for parent_idx, parent in enumerate(parents):
-            pid = _parent_id(parent, parent_idx)
+            pid = _parent_id(parent, doc_idx, parent_idx)
             children = child_splitter.split_documents([parent])
             for child_idx, child in enumerate(children):
                 child.metadata.update({
@@ -294,15 +294,19 @@ def _chunk_hierarchical(
     return all_children
 
 
-def _parent_id(parent: Document, index: int) -> str:
+def _parent_id(parent: Document, doc_index: int, parent_index: int) -> str:
     """Stable 12-hex-char ID for a parent chunk.
 
-    Derived from source path and start_index so re-chunking the same
-    document produces the same IDs (idempotent upserts).
+    Derived from source path, document position, parent position, and
+    start_index so re-chunking the same document produces the same IDs
+    (idempotent upserts).  ``doc_index`` is mandatory because multiple
+    SGML segments from the same file all produce parents with
+    ``start_index=0``, which would otherwise cause hash collisions.
     """
     source = parent.metadata.get("source", "")
-    start  = parent.metadata.get("start_index", index)
-    raw    = f"{source}::parent_start={start}"
+    page   = parent.metadata.get("page", 0)
+    start  = parent.metadata.get("start_index", parent_index)
+    raw    = f"{source}::page={page}::doc={doc_index}::start={start}::pi={parent_index}"
     return hashlib.md5(raw.encode()).hexdigest()[:12]  # noqa: S324
 
 
