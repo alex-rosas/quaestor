@@ -348,7 +348,12 @@ def save_results(results: dict[str, Any], output_path: Path | str) -> None:
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    def _json_serializer(obj: Any) -> Any:
+        if isinstance(obj, float) and (obj != obj):  # NaN check: NaN != NaN
+            return None
+        return str(obj)
+
     output_path.write_text(
-        json.dumps(results, indent=2, default=str), encoding="utf-8"
+        json.dumps(results, indent=2, default=_json_serializer), encoding="utf-8"
     )
     logger.info("Results saved to %s", output_path)
