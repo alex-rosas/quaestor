@@ -295,20 +295,28 @@ def run_ragas_evaluation(
     from ragas import evaluate as ragas_evaluate
     from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.llms import LangchainLLMWrapper
-    from ragas.metrics.collections import (
-        answer_relevancy,
-        context_precision,
-        context_recall,
-        faithfulness,
+    from ragas.metrics import (  # noqa: PLC0415
+        AnswerRelevancy,
+        ContextPrecision,
+        ContextRecall,
+        Faithfulness,
     )
 
     if metrics is None:
-        metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+        # strictness=1 avoids n>1 completions requests that Groq rejects (400)
+        metrics = [Faithfulness(), AnswerRelevancy(strictness=1), ContextPrecision(), ContextRecall()]
 
     dataset = to_ragas_dataset(samples)
 
     ragas_llm = LangchainLLMWrapper(llm) if llm else None
     ragas_emb = LangchainEmbeddingsWrapper(embeddings) if embeddings else None
+
+    from ragas.run_config import RunConfig
+
+    # Limit concurrency to avoid overwhelming the LLM provider (Groq TPD
+    # budget or Ollama queue depth).  max_workers=4 balances throughput
+    # against rate-limit exposure; timeout=300s accommodates slow local models.
+    run_cfg = RunConfig(max_workers=4, timeout=300)
 
     result = ragas_evaluate(
         dataset=dataset,
@@ -317,11 +325,14 @@ def run_ragas_evaluation(
         embeddings=ragas_emb,
         raise_exceptions=False,
         show_progress=True,
+        run_config=run_cfg,
     )
 
-    scores = {k: float(v) for k, v in result.items() if isinstance(v, (int, float))}
+    df = result.to_pandas()
+    metric_cols = [c for c in df.columns if c not in ("user_input", "response", "retrieved_contexts", "reference")]
+    scores = {col: float(df[col].mean()) for col in metric_cols if df[col].dtype.kind in ("f", "i")}
     logger.info("RAGAS scores: %s", scores)
-    return {"scores": scores, "dataset": result.to_pandas().to_dict(orient="records")}
+    return {"scores": scores, "dataset": df.to_dict(orient="records")}
 
 
 # ---------------------------------------------------------------------------

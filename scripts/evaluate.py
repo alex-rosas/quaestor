@@ -36,8 +36,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Make src/ importable when running from the project root
+# Make src/ and the project root importable when running from the project root
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 logging.basicConfig(
     level=logging.INFO,

@@ -84,11 +84,12 @@ def _set_vector_store(vs) -> None:
     st.session_state["vector_store"] = vs
     # Invalidate cached graph when vector store changes
     st.session_state.pop("rag_graph", None)
+    st.session_state.pop("_graph_key", None)
 
 def _get_rag_graph(vs, confidence_threshold: float):
     """Build (or retrieve cached) LangGraph for the current vector store."""
     cache_key = ("rag_graph", id(vs), confidence_threshold)
-    if st.session_state.get("_graph_key") != cache_key:
+    if st.session_state.get("_graph_key") != cache_key or "rag_graph" not in st.session_state:
         from quaestor.retrieval.graph import build_rag_graph
         graph = build_rag_graph(
             vector_store=vs,
