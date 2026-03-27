@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypedDict
 
 from langchain_core.documents import Document
 from langgraph.graph import END, StateGraph
@@ -77,13 +77,19 @@ class RAGState(TypedDict):
     """Mutable state threaded through every graph node.
 
     Attributes:
-        question:     Original user question.
-        docs:         Chunks after reranking (best-first).
-        top_score:    Cross-encoder score of the highest-ranked chunk.
-        answer:       Generated or refusal text (populated at end).
-        sources:      Deduplicated source filenames cited in the answer.
-        refused:      True when the confidence check triggered a refusal.
-        prompt_version: Prompt template version used during generation.
+        question:            Original user question.
+        docs:                Chunks after reranking (best-first).
+        top_score:           Cross-encoder score of the highest-ranked chunk.
+        answer:              Generated or refusal text (populated at end).
+        sources:             Deduplicated source filenames cited in the answer.
+        refused:             True when the confidence check triggered a refusal.
+        prompt_version:      Prompt template version used during generation.
+        confidence_threshold: Runtime threshold override.  When present it
+                             takes precedence over the build-time default
+                             baked into the confidence router.  This lets
+                             callers (e.g. API endpoints) supply the
+                             current settings value even when the graph was
+                             compiled earlier.
     """
 
     question: str
@@ -93,6 +99,7 @@ class RAGState(TypedDict):
     sources: list[str]
     refused: bool
     prompt_version: str
+    confidence_threshold: NotRequired[float]
 
 
 # ---------------------------------------------------------------------------
@@ -104,13 +111,18 @@ class GraphAnswer:
     """Final structured output from :func:`run_rag_graph`.
 
     Attributes:
-        question:       Original user question.
-        answer:         Generated answer text (with inline citations) or
-                        the canned refusal string.
-        sources:        Deduplicated list of source filenames cited.
-        refused:        ``True`` if the confidence threshold was not met.
-        top_score:      Cross-encoder score of the best-ranked chunk.
-        prompt_version: Prompt template version used.
+        question:         Original user question.
+        answer:           Generated answer text (with inline citations) or
+                          the canned refusal string.
+        sources:          Deduplicated list of source filenames cited.
+        refused:          ``True`` if the confidence threshold was not met.
+        top_score:        Cross-encoder score of the best-ranked chunk.
+        prompt_version:   Prompt template version used.
+        retrieved_chunks: Raw text of the chunks that were passed to the
+                          LLM (populated only on the generate path).  Used
+                          by the API hallucination checker so the NLI model
+                          compares the answer against the actual retrieved
+                          paragraphs rather than the source filenames.
     """
 
     question: str
@@ -119,6 +131,7 @@ class GraphAnswer:
     refused: bool = False
     top_score: float = 0.0
     prompt_version: str = PROMPT_VERSION
+    retrieved_chunks: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -199,10 +212,20 @@ def _refuse_node(state: RAGState) -> dict[str, Any]:
     }
 
 
-def _make_confidence_router(threshold: float):
-    """Return a conditional-edge function that routes on cross-encoder score."""
+def _make_confidence_router(default_threshold: float):
+    """Return a conditional-edge function that routes on cross-encoder score.
+
+    The threshold is resolved at routing time: if the caller placed a
+    ``confidence_threshold`` key in the graph state (e.g. an API endpoint
+    passing ``settings.reranker_confidence_threshold`` at request time),
+    that value wins.  Otherwise the *default_threshold* baked in at
+    :func:`build_rag_graph` compilation time is used.  This allows a
+    cached compiled graph to pick up runtime threshold changes without
+    being recompiled.
+    """
 
     def _route(state: RAGState) -> Literal["generate", "refuse"]:
+        threshold = state.get("confidence_threshold", default_threshold)
         if state["top_score"] >= threshold:
             return "generate"
         return "refuse"
@@ -302,15 +325,26 @@ def build_rag_graph(
 # Convenience runner
 # ---------------------------------------------------------------------------
 
-def run_rag_graph(graph: Any, question: str) -> GraphAnswer:
+def run_rag_graph(
+    graph: Any,
+    question: str,
+    confidence_threshold: float | None = None,
+) -> GraphAnswer:
     """Run *graph* for *question* and return a structured :class:`GraphAnswer`.
 
     Args:
-        graph:    Compiled graph from :func:`build_rag_graph`.
-        question: Natural-language question from the user.
+        graph:                Compiled graph from :func:`build_rag_graph`.
+        question:             Natural-language question from the user.
+        confidence_threshold: When provided, overrides the threshold baked
+                              into the graph at compile time.  Pass
+                              ``settings.reranker_confidence_threshold``
+                              here to ensure the live settings value is
+                              used even if the graph was compiled earlier
+                              (e.g. cached at server startup).
 
     Returns:
-        :class:`GraphAnswer` with the answer text, sources, and metadata.
+        :class:`GraphAnswer` with the answer text, sources, retrieved chunk
+        texts, and metadata.
 
     Raises:
         ValueError: If *question* is empty or blank.
@@ -328,6 +362,12 @@ def run_rag_graph(graph: Any, question: str) -> GraphAnswer:
         "prompt_version": PROMPT_VERSION,
     }
 
+    # Only inject state-level threshold when explicitly supplied so that
+    # the build-time closure default remains authoritative for callers
+    # (e.g. tests) that do not pass a runtime value.
+    if confidence_threshold is not None:
+        initial_state["confidence_threshold"] = confidence_threshold
+
     final_state: RAGState = graph.invoke(initial_state)
 
     return GraphAnswer(
@@ -337,4 +377,5 @@ def run_rag_graph(graph: Any, question: str) -> GraphAnswer:
         refused=final_state.get("refused", False),
         top_score=final_state.get("top_score", 0.0),
         prompt_version=final_state.get("prompt_version", PROMPT_VERSION),
+        retrieved_chunks=[doc.page_content for doc in final_state.get("docs", [])],
     )

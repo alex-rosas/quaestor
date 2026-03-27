@@ -179,10 +179,17 @@ def _run_hallucination_check(
 
 
 def _format_context_from_graph_answer(graph_answer: GraphAnswer) -> str:
-    """Reconstruct context string from sources for hallucination check."""
-    # The graph doesn't persist the raw context — we use the answer + sources
-    # as a proxy.  A future improvement stores the context in GraphAnswer.
-    return graph_answer.answer  # self-checking fallback
+    """Return the retrieved chunk text for hallucination checking.
+
+    Uses the actual retrieved paragraphs stored in ``retrieved_chunks`` so
+    the NLI model compares the answer against real document text instead of
+    source filenames.  Falls back to the answer itself only when no chunks
+    are available (e.g. on the refusal path, though hallucination checking
+    is skipped there anyway).
+    """
+    if graph_answer.retrieved_chunks:
+        return "\n\n".join(graph_answer.retrieved_chunks)
+    return graph_answer.answer  # fallback; should not be reached in practice
 
 
 # ---------------------------------------------------------------------------
@@ -225,16 +232,21 @@ async def ask(
     if request.check_pii:
         question, pii_report = _run_pii_check(question, analyzer, anonymizer)
 
-    # 2. RAG graph
-    graph_answer: GraphAnswer = run_rag_graph(rag_graph, question)
+    # 2. RAG graph — pass live settings threshold so a cached graph stays
+    #    in sync with config changes without requiring a server restart.
+    graph_answer: GraphAnswer = run_rag_graph(
+        rag_graph,
+        question,
+        confidence_threshold=settings.reranker_confidence_threshold,
+    )
 
     # 3. Hallucination check
     hallucination: HallucinationCheck | None = None
     if request.check_hallucination and not graph_answer.refused:
-        context_proxy = " ".join(graph_answer.sources) or graph_answer.answer
+        context = _format_context_from_graph_answer(graph_answer)
         hallucination = _run_hallucination_check(
             answer=graph_answer.answer,
-            context=context_proxy,
+            context=context,
             classifier=nli_classifier,
         )
 
