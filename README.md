@@ -109,6 +109,36 @@ Every query is traced end-to-end via Langfuse (retrieval → rerank → gate →
 
 ---
 
+## The Chunking Problem — Visualised
+
+The core engineering challenge is that financial documents break naïve chunkers badly. Here's the evidence from a real JPMorgan Chase 10-K filing.
+
+### Act 1 — 64% of fixed-size chunks are structurally broken
+
+![Failure analysis](docs/figures/01_failure_analysis.png)
+
+Fixed-size chunking produces mid-sentence cuts, orphaned numbers, table fragments, and micro-chunks. Nearly two-thirds of chunks from a real 10-K are unusable for precise retrieval.
+
+### Act 2 — The mechanism: the splitter always hits its ceiling
+
+![Fixed-size distribution](docs/figures/02_fixed_distribution.png)
+
+The spike at 512 characters is the tell. The splitter hits its size limit and cuts regardless of sentence or table boundaries — the distribution is driven by the limit, not the document structure.
+
+### Act 3 — Hierarchical chunking produces a fundamentally different shape
+
+![Hierarchical distribution](docs/figures/03_hierarchical_distribution.png)
+
+256-char child chunks with sentence-aware splitting. No ceiling spike, no arbitrary cuts. The splitter follows document structure instead of fighting it.
+
+### Act 4 — One architectural change, measurable improvement
+
+![RAGAS comparison](docs/figures/04_ragas_comparison.png)
+
+Switching from 256-char child fragments to 1024-char parent windows for LLM context: LLM self-refusals drop from 30% to zero, answer rate triples, and RAGAS scores become measurable for the first time.
+
+---
+
 ## Results
 
 Phase 3 evaluation on a 20-question golden dataset (60% answerable, 40% unanswerable):
@@ -257,26 +287,6 @@ quaestor/
 ├── docker-compose.yml
 └── .env.example
 ```
-
----
-
-## Key Decisions
-
-**Why hierarchical chunking?**
-Fixed 512-token chunks bisect financial tables mid-body, stripping column headers from rows. Child chunks (256 chars) keep retrieval precise; parent chunks (1024 chars) give the LLM complete table context. One line of code, +300% answer rate.
-
-**Why a confidence gate?**
-Cross-encoder scores correlate with answerability. When the top-ranked chunk scores below threshold the system refuses instead of hallucinating. Incorrect confident answers in financial contexts have real consequences — conservative refusal is the safer failure mode.
-
-**Why 60% gate refusals in testing?**
-The 20-question golden dataset deliberately includes hard cases: questions about fiscal years not in the indexed filing, metrics Apple doesn't disclose, and aggregate figures that aren't explicitly stated. In a real analyst workflow the refusal rate would be 10-15%.
-
-**Why Groq over local inference?**
-2020 M1 MacBook Air (8 GB): Ollama Llama 3.1 8B runs at ~15 tok/s. Groq Llama 3.3 70B runs at ~300 tok/s — 20× faster, 9× larger model, free. The development loop tax compounds over weeks of iteration.
-
-**ChromaDB now, Qdrant later:**
-ChromaDB is zero-config, in-process, and perfect for CI. Qdrant adds native hybrid BM25+dense retrieval. Migration is opt-in via `VECTOR_STORE_BACKEND=qdrant` — ChromaDB remains the default.
-
 ---
 
 ## Roadmap
