@@ -132,6 +132,29 @@ def get_rag_graph(
     )
 
 
+def get_langfuse_handler():
+    """Return a Langfuse CallbackHandler when tracing is enabled, else None.
+
+    The handler is created per-request so each trace gets its own session
+    rather than all requests sharing a single long-running handler.
+    """
+    if not settings.langfuse_enabled:
+        return None
+    try:
+        from langfuse.callback import CallbackHandler
+        return CallbackHandler(
+            public_key=settings.langfuse_public_key,
+            secret_key=settings.langfuse_secret_key,
+            host=settings.langfuse_host,
+        )
+    except ImportError:
+        logger.warning(
+            "langfuse package not installed — tracing disabled. "
+            "Run: uv add langfuse"
+        )
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -234,10 +257,12 @@ async def ask(
 
     # 2. RAG graph — pass live settings threshold so a cached graph stays
     #    in sync with config changes without requiring a server restart.
+    #    Langfuse handler is None when tracing is not configured.
     graph_answer: GraphAnswer = run_rag_graph(
         rag_graph,
         question,
         confidence_threshold=settings.reranker_confidence_threshold,
+        langfuse_handler=get_langfuse_handler(),
     )
 
     # 3. Hallucination check
@@ -323,10 +348,15 @@ async def ask_stream(
         from quaestor.generation.chain import _format_context
         context = _format_context(ranked)
 
-        # 5. Stream LLM tokens
+        # 5. Stream LLM tokens — attach Langfuse handler when tracing is on
         pipeline = RAG_PROMPT | llm | StrOutputParser()
+        stream_config: dict = {}
+        handler = get_langfuse_handler()
+        if handler is not None:
+            stream_config["callbacks"] = [handler]
         async for chunk in pipeline.astream(
-            {"context": context, "question": question}
+            {"context": context, "question": question},
+            config=stream_config or None,
         ):
             yield _sse({"type": "token", "content": chunk})
 

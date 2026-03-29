@@ -148,6 +148,25 @@ class Settings(BaseSettings):
         description="Email sent in the SEC EDGAR User-Agent header",
     )
 
+    # --- Langfuse observability ---
+    langfuse_public_key: str = Field(
+        default="",
+        description="Langfuse public key (pk-lf-…). Leave blank to disable tracing.",
+    )
+    langfuse_secret_key: str = Field(
+        default="",
+        description="Langfuse secret key (sk-lf-…). Leave blank to disable tracing.",
+    )
+    langfuse_host: str = Field(
+        default="http://localhost:3000",
+        description="Langfuse server URL. Self-hosted or Langfuse Cloud.",
+    )
+
+    @property
+    def langfuse_enabled(self) -> bool:
+        """Langfuse tracing is active only when both keys are present."""
+        return bool(self.langfuse_public_key and self.langfuse_secret_key)
+
     @field_validator("chunk_overlap")
     @classmethod
     def overlap_less_than_chunk(cls, v: int, info: object) -> int:

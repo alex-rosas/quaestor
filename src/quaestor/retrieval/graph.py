@@ -329,6 +329,7 @@ def run_rag_graph(
     graph: Any,
     question: str,
     confidence_threshold: float | None = None,
+    langfuse_handler: Any | None = None,
 ) -> GraphAnswer:
     """Run *graph* for *question* and return a structured :class:`GraphAnswer`.
 
@@ -341,6 +342,9 @@ def run_rag_graph(
                               here to ensure the live settings value is
                               used even if the graph was compiled earlier
                               (e.g. cached at server startup).
+        langfuse_handler:     Optional Langfuse ``CallbackHandler``.  When
+                              provided, every LangChain/LangGraph step is
+                              traced as nested spans under a single trace.
 
     Returns:
         :class:`GraphAnswer` with the answer text, sources, retrieved chunk
@@ -368,7 +372,11 @@ def run_rag_graph(
     if confidence_threshold is not None:
         initial_state["confidence_threshold"] = confidence_threshold
 
-    final_state: RAGState = graph.invoke(initial_state)
+    invoke_config: dict[str, Any] = {}
+    if langfuse_handler is not None:
+        invoke_config["callbacks"] = [langfuse_handler]
+
+    final_state: RAGState = graph.invoke(initial_state, config=invoke_config or None)
 
     return GraphAnswer(
         question=question,

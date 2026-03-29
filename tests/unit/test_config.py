@@ -46,6 +46,9 @@ def fresh_settings(monkeypatch: pytest.MonkeyPatch, **overrides) -> Settings:
         "DATA_PROCESSED_DIR",
         "SEC_REQUESTER_NAME",
         "SEC_REQUESTER_EMAIL",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_HOST",
     ]
     for var in env_vars_to_clear:
         monkeypatch.delenv(var, raising=False)
@@ -231,3 +234,43 @@ class TestEnvOverrides:
         monkeypatch.setenv("llm_provider", "together")
         cfg = Settings(_env_file=None)
         assert cfg.llm_provider == LLMProvider.TOGETHER
+
+
+# ---------------------------------------------------------------------------
+# Langfuse observability
+# ---------------------------------------------------------------------------
+
+class TestLangfuse:
+    def test_langfuse_disabled_by_default(self, monkeypatch):
+        """langfuse_enabled must be False when keys are not set."""
+        cfg = fresh_settings(monkeypatch)
+        assert cfg.langfuse_enabled is False
+
+    def test_langfuse_enabled_when_both_keys_set(self, monkeypatch):
+        """langfuse_enabled must be True when both public and secret keys are non-empty."""
+        cfg = fresh_settings(
+            monkeypatch,
+            langfuse_public_key="pk-lf-test",
+            langfuse_secret_key="sk-lf-test",
+        )
+        assert cfg.langfuse_enabled is True
+
+    def test_langfuse_disabled_when_only_public_key_set(self, monkeypatch):
+        """langfuse_enabled must be False when only one key is present."""
+        cfg = fresh_settings(monkeypatch, langfuse_public_key="pk-lf-test")
+        assert cfg.langfuse_enabled is False
+
+    def test_langfuse_disabled_when_only_secret_key_set(self, monkeypatch):
+        """langfuse_enabled must be False when only the secret key is present."""
+        cfg = fresh_settings(monkeypatch, langfuse_secret_key="sk-lf-test")
+        assert cfg.langfuse_enabled is False
+
+    def test_langfuse_host_default(self, monkeypatch):
+        """langfuse_host must default to localhost:3000 for self-hosted setup."""
+        cfg = fresh_settings(monkeypatch)
+        assert cfg.langfuse_host == "http://localhost:3000"
+
+    def test_langfuse_host_override(self, monkeypatch):
+        """langfuse_host can be overridden to point at Langfuse Cloud."""
+        cfg = fresh_settings(monkeypatch, langfuse_host="https://cloud.langfuse.com")
+        assert cfg.langfuse_host == "https://cloud.langfuse.com"
