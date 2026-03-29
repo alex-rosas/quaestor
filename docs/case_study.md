@@ -307,31 +307,64 @@ A 512-token chunk boundary cuts mid-table. The retrieved chunk contains rows of 
 
 ---
 
-## Interview Talking Points
+## Design Notes and Observations
 
-### "Walk me through a technical decision you made."
+### Context Construction
 
-> "The central decision was hierarchical chunking. Fixed-size 512-token chunks reliably bisect financial tables, leaving column headers in one chunk and data rows in another. The LLM receives incomplete context and refuses to answer.
->
-> I designed a two-tier system: 256-char child chunks for retrieval precision, 1024-char parent chunks stored as metadata for generation context. Phase 3 validated this: one-line change to use parent windows eliminated all LLM self-refusals (30% → 0%) and tripled the answer rate (10% → 40%). That's the architecture working as designed."
+One of the main issues I ran into was how poorly fixed-size chunking works for financial documents.
 
-### "How do you handle failure cases?"
+With 512-token chunks, tables get split in awkward ways — for example, column headers end up in one chunk and the actual data rows in another. When the model receives only part of that structure, it either produces low-quality answers or refuses entirely.
 
-> "Two safety layers. First, the confidence gate: after retrieval and cross-encoder reranking, if the top-scored chunk is below threshold, the system refuses without calling the LLM — cheaper and honest. Second, NLI hallucination check: DeBERTa-v3 verifies every generated answer against the retrieved context. Entailment passes, neutral or contradiction triggers a warning.
->
-> The 60% refusal rate on my test dataset looks alarming but is correct — those questions ask about data not in the indexed filing. Conservative refusal is the right failure mode in financial contexts."
+What worked better was separating concerns:
 
-### "What metrics do you track?"
+- Small chunks (~256 chars) for retrieval precision  
+- Larger “parent” windows (~1024 chars) for generation context  
 
-> "RAGAS for evaluation quality: faithfulness, context precision, context recall, answer relevancy — measured on a frozen 20-question golden dataset. And operational metrics via Langfuse: query latency breakdown by stage, confidence score distribution, gate refusal rate, NLI pass rate.
->
-> The key Phase 3 result was eliminating LLM self-refusals — that's an operational metric, not a RAGAS metric, but it's what makes the system actually usable."
+This keeps retrieval focused while giving the model enough context to reconstruct structured information. In practice, switching to parent context reduced refusal behavior significantly and made answers more consistent.
 
-### "Why is faithfulness 0.367 instead of 0.84?"
+### Handling Uncertainty
 
-> "That's the dataset story. The 20-question golden dataset includes 60% questions that are genuinely unanswerable — wrong fiscal year, undisclosed metrics. RAGAS averages over all 20 including refused questions, suppressing the mean.
->
-> The improvement story is: before parent context injection, RAGAS couldn't even measure faithfulness — only 10% of questions got real answers. After injection, 40% got answers and faithfulness became 0.367. That's still below the 0.84 target, but the gap is a dataset composition problem, not a pipeline problem. Expanding to 120 clearly answerable questions would close most of it. For a portfolio demonstration, having a clear diagnosis is more valuable than a inflated score from an easy dataset."
+A recurring question was how to deal with cases where the system *probably shouldn’t answer*.
+
+I ended up treating this explicitly in two stages:
+
+- A **confidence gate** after reranking: if the top result is below a threshold, the system refuses early instead of passing weak context to the LLM  
+- A **post-generation check** using NLI to verify whether the answer is actually supported by the retrieved context  
+
+This shifts the system toward conservative behavior. In this domain, refusing is often preferable to giving a plausible but incorrect answer.
+
+### Evaluation Approach
+
+For evaluation, I used a small fixed dataset (20 questions) and tracked:
+
+- Faithfulness  
+- Context precision / recall  
+- Answer relevancy  
+
+along with operational signals like:
+- refusal rate  
+- latency by stage  
+- confidence score distribution  
+
+One thing that became clear is that metrics alone are not always easy to interpret without understanding the dataset composition.
+
+### On the Faithfulness Score
+
+The faithfulness score (~0.36) looks low at first glance, but it’s influenced by the dataset design.
+
+A large portion of the questions are intentionally unanswerable (e.g., asking for data not present in the document). Since evaluation averages over all questions, refusals tend to lower the overall score.
+
+What mattered more in this case was the transition:
+- initially, very few questions produced usable answers  
+- after improving context construction, a larger subset became answerable and measurable  
+
+So the score reflects both system behavior and dataset composition, not just model quality.
+
+### General Takeaway
+
+The main takeaway from this project is that small design decisions in RAG systems — especially around context construction and filtering — have a large impact on behavior.
+
+In structured documents like financial filings, naive approaches tend to fail in predictable ways, and addressing those failures requires treating retrieval, context, and validation as separate concerns.
 
 ---
 

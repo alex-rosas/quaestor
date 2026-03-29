@@ -303,12 +303,49 @@ quaestor/
 
 ---
 
-## References
+## Internal References
 
 - [Case Study](docs/case_study.md)
 - [Phase 3 Before/After](eval/results/COMPARISON.md)
-- [RAGAS paper](https://arxiv.org/abs/2309.15217)
 
+---
+
+## External References
+
+### Core RAG Framework
+- Lewis, P., et al. (2020). *Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks*.  
+  https://arxiv.org/abs/2005.11401
+
+### Evaluation
+- Shah, R., et al. (2023). *RAGAS: Automated Evaluation of Retrieval Augmented Generation*.  
+  https://arxiv.org/abs/2309.15217
+
+### Long Context Limitations
+- Liu, N. F., et al. (2023). *Lost in the Middle: How Language Models Use Long Contexts*.  
+  https://arxiv.org/abs/2307.03172
+
+### Retrieval and Reranking
+- Nogueira, R., & Cho, K. (2019). *Passage Re-ranking with BERT*.  
+  https://arxiv.org/abs/1901.04085
+
+### Hallucination / Reliability
+- Manakul, P., et al. (2023). *SelfCheckGPT: Zero-Resource Black-Box Hallucination Detection*.  
+  https://arxiv.org/abs/2303.08896
+
+---
+
+### Industry Context
+
+- [AlphaSense](https://www.alpha-sense.com/) — AI-powered financial document search and analysis
+- [Bloomberg Terminal](https://professional.bloomberg.com/products/bloomberg-terminal/) — comprehensive financial data and analytics platform
+- [LSEG Data & Analytics](https://www.lseg.com/en/data-analytics) — financial market data and infrastructure (formerly Refinitiv)
+
+---
+
+### Optional (Further Reading)
+
+- Zhang, Y., et al. (2023). *A Survey of Hallucination in Large Language Models*.
+  https://arxiv.org/abs/2309.01219
 ---
 
 ## License
