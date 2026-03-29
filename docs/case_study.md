@@ -4,6 +4,26 @@
 
 ---
 
+## Table of Contents
+
+- [The Business Problem](#the-business-problem)
+- [Motivation](#motivation)
+- [Relation to Prior Work](#relation-to-prior-work)
+- [Industry Context](#industry-context)
+- [Project Contribution](#project-contribution)
+- [Positioning](#positioning)
+- [Technical Approach](#technical-approach)
+- [Technical Decisions & Trade-Offs](#technical-decisions--trade-offs)
+- [What I Learned](#what-i-learned)
+- [Results](#results)
+- [What I'd Do Differently](#what-id-do-differently)
+- [Design Notes and Observations](#design-notes-and-observations)
+- [Project Links](#project-links)
+- [Status: v3.0-portfolio-ready](#status-v30-portfolio-ready)
+- [References](#references)
+  
+---
+
 ## The Business Problem
 
 ### Who It's For

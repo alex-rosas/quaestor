@@ -12,6 +12,26 @@ Quaestor sits at the boundary between search and reasoning. It is not a chatbot 
 
 ---
 
+## Table of Contents
+
+- [Demonstration](#demonstration)
+- [What It Does](#what-it-does)
+- [Who Is This For](#who-is-this-for)
+- [How It Works](#how-it-works)
+- [The Chunking Problem — Visualised](#the-chunking-problem--visualised)
+- [Results](#results)
+- [Stack](#stack)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Tests](#tests)
+- [Project Structure](#project-structure)
+- [Roadmap](#roadmap)
+- [Internal References](#internal-references)
+- [External References](#external-references)
+- [License](#license)
+
+---
+
 ## Demonstration
 
 **Question:** *"What was Apple's net income in FY2025?"*
