@@ -406,8 +406,22 @@ def main() -> None:
             if check_hallucination and graph_answer and not graph_answer.refused:
                 st.write("🛡️ Running hallucination check…")
 
+            # Treat LLM self-refusals the same as gate refusals for display purposes
+            _REFUSAL_PHRASE = "don't have enough information"
+            is_any_refusal = graph_answer and (
+                graph_answer.refused
+                or _REFUSAL_PHRASE in (graph_answer.answer or "").lower()
+            )
+
+            _REFUSAL_PHRASE = "don't have enough information"
+            is_llm_self_refusal = (
+                graph_answer and not graph_answer.refused
+                and _REFUSAL_PHRASE in (graph_answer.answer or "").lower()
+            )
             if graph_answer and graph_answer.refused:
-                status.update(label="🚫 Confidence gate fired — question refused", state="error", expanded=False)
+                status.update(label="🔒 Stopped before LLM — retrieval confidence too low", state="complete", expanded=False)
+            elif is_llm_self_refusal:
+                status.update(label="🤔 LLM reached but couldn't form a confident answer", state="complete", expanded=False)
             else:
                 status.update(label="✅ Answer ready", state="complete", expanded=False)
 
@@ -415,11 +429,33 @@ def main() -> None:
         if graph_answer is None:
             st.stop()
 
+        _REFUSAL_PHRASE = "don't have enough information"
+        is_llm_self_refusal = (
+            not graph_answer.refused
+            and _REFUSAL_PHRASE in (graph_answer.answer or "").lower()
+        )
+
         if graph_answer.refused:
             st.info(
-                "🔍 **Low retrieval confidence** — the retrieved documents "
-                "don't appear relevant enough to answer this question reliably.\n\n"
-                f"> {graph_answer.answer}"
+                "🔒 **Retrieval confidence too low — no LLM call was made.**\n\n"
+                "The system searched the indexed documents and scored how relevant "
+                "the results were to your question. The score fell below the confidence "
+                "threshold, so the pipeline stopped here rather than risk sending weak "
+                "evidence to the model.\n\n"
+                "**What this means:** The answer is likely not in the indexed documents, "
+                "or the question may be phrased in a way that doesn't match the filing language.\n\n"
+                "_Try rephrasing, or check that the relevant filing is indexed._"
+            )
+        elif is_llm_self_refusal:
+            st.info(
+                "🤔 **The model received the documents but couldn't form a confident answer.**\n\n"
+                "Unlike the case above, the retrieval confidence was high enough — relevant "
+                "passages were found and sent to the model. However, after reading the context, "
+                "the model determined it still didn't have enough information to give a "
+                "reliable, cited answer.\n\n"
+                "**What this means:** The documents were retrieved correctly, but the specific "
+                "detail you're asking for may not be explicitly stated in those passages.\n\n"
+                "_Try asking a more specific question, or check a different filing._"
             )
         else:
             st.markdown("### Answer")
