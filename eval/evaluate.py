@@ -26,6 +26,7 @@ Public API (importable, all network-free parts)::
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 from dataclasses import dataclass, field
@@ -212,6 +213,7 @@ def run_pipeline_on_dataset(
     cross_encoder=None,
     top_k: int = 5,
     confidence_threshold: float | None = None,
+    checkpoint_path: Path | None = None,
 ) -> list[EvaluationSample]:
     """Run the RAG pipeline on every golden question and collect samples.
 
@@ -267,6 +269,22 @@ def run_pipeline_on_dataset(
 
         samples.append(sample)
 
+        if checkpoint_path is not None:
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_text(
+                json.dumps([dataclasses.asdict(s) for s in samples], indent=2),
+                encoding="utf-8",
+            )
+            logger.info("Checkpoint saved (%d/%d) → %s", len(samples), len(questions), checkpoint_path)
+
+            if len(samples) in (5, 10, 15, 20):
+                milestone_path = checkpoint_path.parent / f"milestone_Q{len(samples):02d}.json"
+                milestone_path.write_text(
+                    json.dumps([dataclasses.asdict(s) for s in samples], indent=2),
+                    encoding="utf-8",
+                )
+                logger.info("*** MILESTONE Q%02d reached — snapshot saved → %s ***", len(samples), milestone_path)
+
     return samples
 
 
@@ -279,20 +297,24 @@ def run_ragas_evaluation(
     llm=None,
     embeddings=None,
     metrics: list | None = None,
+    checkpoint_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Score *samples* with RAGAS and return a results dict.
+    """Score *samples* with RAGAS one question at a time, checkpointing after each.
 
     Args:
-        samples:    Evaluation samples from :func:`run_pipeline_on_dataset`.
-        llm:        LangChain LLM wrapper for RAGAS judge metrics.
-        embeddings: LangChain Embeddings for answer relevancy.
-        metrics:    Override the default metric list.
+        samples:         Evaluation samples from :func:`run_pipeline_on_dataset`.
+        llm:             LangChain LLM wrapper for RAGAS judge metrics.
+        embeddings:      LangChain Embeddings for answer relevancy.
+        metrics:         Override the default metric list.
+        checkpoint_path: If set, save scored rows here after each question and
+                         skip already-scored questions on resume.
 
     Returns:
         Dict with ``"scores"`` (per-metric averages) and ``"per_question"``
         (per-sample breakdowns).
     """
     from ragas import evaluate as ragas_evaluate
+    from ragas.dataset_schema import EvaluationDataset, SingleTurnSample
     from ragas.embeddings import LangchainEmbeddingsWrapper
     from ragas.llms import LangchainLLMWrapper
     from ragas.metrics import (  # noqa: PLC0415
@@ -301,38 +323,74 @@ def run_ragas_evaluation(
         ContextRecall,
         Faithfulness,
     )
+    from ragas.run_config import RunConfig
 
     if metrics is None:
-        # strictness=1 avoids n>1 completions requests that Groq rejects (400)
         metrics = [Faithfulness(), AnswerRelevancy(strictness=1), ContextPrecision(), ContextRecall()]
-
-    dataset = to_ragas_dataset(samples)
 
     ragas_llm = LangchainLLMWrapper(llm) if llm else None
     ragas_emb = LangchainEmbeddingsWrapper(embeddings) if embeddings else None
-
-    from ragas.run_config import RunConfig
-
-    # Limit concurrency to avoid overwhelming the LLM provider (Groq TPD
-    # budget or Ollama queue depth).  max_workers=4 balances throughput
-    # against rate-limit exposure; timeout=300s accommodates slow local models.
     run_cfg = RunConfig(max_workers=4, timeout=300)
 
-    result = ragas_evaluate(
-        dataset=dataset,
-        metrics=metrics,
-        llm=ragas_llm,
-        embeddings=ragas_emb,
-        raise_exceptions=False,
-        show_progress=True,
-        run_config=run_cfg,
-    )
+    # Load existing RAGAS checkpoint (resume)
+    scored_rows: list[dict] = []
+    if checkpoint_path is not None and checkpoint_path.exists():
+        scored_rows = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        logger.info("RAGAS checkpoint loaded — %d already scored", len(scored_rows))
 
-    df = result.to_pandas()
+    done_questions = {row["user_input"] for row in scored_rows}
+
+    for i, sample in enumerate(samples, 1):
+        if sample.question in done_questions:
+            logger.info("[%d/%d] Skipping already-scored: %r", i, len(samples), sample.question[:60])
+            continue
+
+        logger.info("[%d/%d] Scoring: %r", i, len(samples), sample.question[:60])
+
+        single = EvaluationDataset(samples=[
+            SingleTurnSample(
+                user_input=sample.question,
+                response=sample.answer,
+                retrieved_contexts=sample.retrieved_contexts,
+                reference=sample.ground_truth,
+            )
+        ])
+
+        result = ragas_evaluate(
+            dataset=single,
+            metrics=metrics,
+            llm=ragas_llm,
+            embeddings=ragas_emb,
+            raise_exceptions=False,
+            show_progress=False,
+            run_config=run_cfg,
+        )
+
+        row = result.to_pandas().to_dict(orient="records")[0]
+        scored_rows.append(row)
+
+        if checkpoint_path is not None:
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_path.write_text(
+                json.dumps(scored_rows, indent=2, default=lambda o: None if isinstance(o, float) and o != o else str(o)),
+                encoding="utf-8",
+            )
+            logger.info("RAGAS checkpoint saved (%d/%d) → %s", len(scored_rows), len(samples), checkpoint_path)
+
+            if len(scored_rows) in (5, 10, 15, 20):
+                milestone_path = checkpoint_path.parent / f"ragas_milestone_Q{len(scored_rows):02d}.json"
+                milestone_path.write_text(
+                    json.dumps(scored_rows, indent=2, default=lambda o: None if isinstance(o, float) and o != o else str(o)),
+                    encoding="utf-8",
+                )
+                logger.info("*** RAGAS MILESTONE Q%02d reached → %s ***", len(scored_rows), milestone_path)
+
+    import pandas as pd
+    df = pd.DataFrame(scored_rows)
     metric_cols = [c for c in df.columns if c not in ("user_input", "response", "retrieved_contexts", "reference")]
     scores = {col: float(df[col].mean()) for col in metric_cols if df[col].dtype.kind in ("f", "i")}
     logger.info("RAGAS scores: %s", scores)
-    return {"scores": scores, "dataset": df.to_dict(orient="records")}
+    return {"scores": scores, "dataset": scored_rows}
 
 
 # ---------------------------------------------------------------------------
