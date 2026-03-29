@@ -242,7 +242,7 @@ def _format_context(docs: list[Document]) -> str:
     for doc in docs:
         source = doc.metadata.get("source", "unknown")
         page = doc.metadata.get("page", "?")
-        parts.append(f"[Source: {source}, Page {page}]\n{doc.page_content}")
+        parts.append(f"[Source: {source}, Page {page}]\n{doc.metadata.get('parent_content', doc.page_content)}")
     return "\n\n---\n\n".join(parts)
 
 
