@@ -39,22 +39,103 @@ Apple's net income for fiscal year 2025 was $93,736 million.
 
 ---
 
-## Why I Built This
+## Motivation
 
-### Primary Goal: Demonstrate RAG Architecture Skills
+Financial document search and analysis is a well-established problem in professional services. Platforms such as AlphaSense, Bloomberg, and Refinitiv already provide powerful tools for navigating filings, extracting information, and supporting analysts in research workflows.
 
-I wanted to build a portfolio project showing AI Engineer recruiters at EY that I understand:
-- **Retrieval-Augmented Generation (RAG)** — the dominant architecture for document Q&A systems
-- **Production engineering** — observability, testing, Docker deployment — not just a demo
-- **Evaluation discipline** — RAGAS metrics, before/after comparisons, controlled experiments
-- **Safety & trust** — confidence gating, hallucination detection, citation enforcement
+However, these systems are primarily optimized for search and retrieval. Precise question answering over long, structured documents — especially when answers depend on tables, footnotes, or context distributed across sections — remains challenging. In practice, analysts often still rely on manual validation, cross-referencing, and interpretation.
+
+This project does not attempt to replace these tools. Instead, it uses financial filings as a demanding testbed for studying retrieval-augmented generation (RAG) systems in conditions where:
+- Documents are long (100–300+ pages)
+- Information is hierarchically structured (sections, tables, footnotes)
+- Relevant context may be fragmented across distant parts of the document
+- Incorrect answers carry non-trivial consequences
+
+These characteristics expose known failure modes of RAG systems:
+- **Context fragmentation** (naive chunking breaks tables and structure)
+- **Retrieval noise** (irrelevant but semantically similar chunks)
+- **Hallucination under uncertainty** (LLMs generating plausible but unsupported answers)
+
+Quaestor was built as an experiment in applying production-oriented RAG techniques to this setting, with the goal of understanding how architectural decisions affect reliability.
+
+---
+
+## Relation to Prior Work
+
+The system design is grounded in established research:
+
+- Retrieval-augmented generation as introduced in *Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks* (Lewis et al., 2020)
+- Evaluation using *RAGAS: Automated Evaluation of Retrieval Augmented Generation* (Shah et al., 2023)
+- Long-context limitations highlighted in *Lost in the Middle* (Liu et al., 2023)
+- Retrieval quality improvements via cross-encoder reranking (Nogueira & Cho, 2019)
+- Hallucination detection approaches such as SelfCheckGPT (Manakul et al., 2023)
+
+These works collectively show that while RAG is effective, its performance depends heavily on retrieval quality, context construction, and validation mechanisms.
+
+---
+
+## Industry Context
+
+Existing platforms such as AlphaSense, Bloomberg, and Refinitiv demonstrate that document search at scale is already a solved problem in many respects. They provide:
+- Fast keyword and semantic search
+- Document indexing and filtering
+- Access to curated financial datasets
+
+However, they typically:
+- Do not guarantee grounded, cited answers
+- Rely on users to interpret retrieved passages
+- Are not designed as end-to-end generative QA systems with explicit hallucination controls
+
+This creates a gap between **retrieval** and **fully grounded question answering**.
+
+---
+
+## Project Contribution
+
+The contribution of Quaestor is not a new model or a novel algorithm, but a **system-level exploration of RAG behavior under realistic constraints**.
+
+Specifically, it demonstrates:
+
+### 1. Impact of Context Construction
+- Shows how naive fixed-size chunking fails on structured financial data
+- Introduces hierarchical chunking with parent context injection
+- Empirically improves answerability and reduces LLM refusal
+
+### 2. Retrieval + Reranking Interaction
+- Combines dense retrieval with cross-encoder reranking
+- Uses confidence scores to estimate answerability
+
+### 3. Explicit Failure Handling
+- Implements a confidence gate to prefer refusal over hallucination
+- Adds a post-generation NLI check to validate answer grounding
+
+### 4. Evaluation-Driven Development
+- Uses RAGAS metrics to track changes across controlled experiments
+- Includes unanswerable questions to test system behavior under uncertainty
+
+---
+
+## Positioning
+
+Quaestor should be understood as:
+
+- Not a replacement for existing financial research platforms  
+- Not a novel ML algorithm  
+
+But rather:
+
+> A production-style RAG system built to study and mitigate known failure modes in a high-precision, structured-document domain.
+
+The primary contribution is **clarifying how design choices affect reliability**, rather than claiming to solve the broader problem.
+
+In that sense, the value of the project lies less in the system itself, and more in the disciplined exploration of how RAG systems behave when correctness, not just fluency, is the primary constraint.
 
 ### Why Financial Documents?
 
-1. **Domain relevance** — EY's core business involves exactly these document types
-2. **Hard problem** — 300+ page documents with nested financial tables stress-test chunking strategies
-3. **Measurable success** — either the answer is correct with a source, or it isn't
-4. **Production stakes** — incorrect financial answers have real consequences
+1. **Hard problem** — 300+ page filings with nested financial tables expose every weakness in naïve chunking strategies
+2. **Measurable success** — either the answer is correct with a source citation, or it isn't
+3. **Production stakes** — incorrect financial answers have real consequences, so safety mechanisms like confidence gating and hallucination detection are not optional
+4. **Domain depth** — SEC 10-Ks, IFRS standards, and PCAOB guidance represent the full stack of documents a financial analyst encounters
 
 ---
 
@@ -256,7 +337,7 @@ A 512-token chunk boundary cuts mid-table. The retrieved chunk contains rows of 
 
 ## Project Links
 
-- **Repository:** [github.com/yourusername/quaestor](https://github.com/yourusername/quaestor)
+- **Repository:** [github.com/alex-rosas/quaestor](https://github.com/alex-rosas/quaestor)
 - **RAGAS Before/After:** [eval/results/COMPARISON.md](../eval/results/COMPARISON.md)
 - **README:** [README.md](../README.md)
 
@@ -271,3 +352,40 @@ Parked to build Consilium (multi-agent financial workflow system). Quaestor is a
 2. Qdrant hybrid retrieval
 3. Confidence threshold calibration
 4. CI/CD eval gate (GitHub Actions)
+
+## References
+
+### Core RAG Framework
+- Lewis, P., et al. (2020). *Retrieval-Augmented Generation for Knowledge-Intensive NLP Tasks*.  
+  https://arxiv.org/abs/2005.11401
+
+### Evaluation
+- Shah, R., et al. (2023). *RAGAS: Automated Evaluation of Retrieval Augmented Generation*.  
+  https://arxiv.org/abs/2309.15217
+
+### Long Context Limitations
+- Liu, N. F., et al. (2023). *Lost in the Middle: How Language Models Use Long Contexts*.  
+  https://arxiv.org/abs/2307.03172
+
+### Retrieval and Reranking
+- Nogueira, R., & Cho, K. (2019). *Passage Re-ranking with BERT*.  
+  https://arxiv.org/abs/1901.04085
+
+### Hallucination / Reliability
+- Manakul, P., et al. (2023). *SelfCheckGPT: Zero-Resource Black-Box Hallucination Detection*.  
+  https://arxiv.org/abs/2303.08896
+
+---
+
+### Industry Context
+
+- [AlphaSense](https://www.alpha-sense.com/) — AI-powered financial document search and analysis
+- [Bloomberg Terminal](https://professional.bloomberg.com/products/bloomberg-terminal/) — comprehensive financial data and analytics platform
+- [LSEG Data & Analytics](https://www.lseg.com/en/data-analytics) — financial market data and infrastructure (formerly Refinitiv)
+
+---
+
+### Optional (Further Reading)
+
+- Zhang, Y., et al. (2023). *A Survey of Hallucination in Large Language Models*.
+  https://arxiv.org/abs/2309.01219

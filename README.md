@@ -8,6 +8,8 @@
 
 Financial analysts spend hours navigating 300-page 10-K filings to find specific disclosures. Quaestor turns that into seconds — with a natural language question, a cited answer, and a confidence gate that refuses rather than guesses when the answer isn't there.
 
+Quaestor sits at the boundary between search and reasoning. It is not a chatbot wrapper around a PDF, and it does not attempt to replace platforms like Bloomberg or AlphaSense. The engineering question it answers is narrower and harder: how do you build a retrieval system precise enough to cite a source, and disciplined enough to refuse when the evidence isn't there? The primary constraint is correctness, not fluency — and that changes every architectural decision. The full reasoning behind these choices is in the [case study](docs/case_study.md).
+
 ---
 
 ## Demo
