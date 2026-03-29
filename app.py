@@ -345,11 +345,11 @@ def main() -> None:
             "The **unanswerable** group demonstrates the confidence gate — "
             "the system refuses rather than hallucinating."
         )
-        for group, questions in SAMPLE_QUESTIONS.items():
+        for g_idx, (group, questions) in enumerate(SAMPLE_QUESTIONS.items()):
             st.markdown(f"**{group}**")
             cols = st.columns(2)
             for i, q in enumerate(questions):
-                if cols[i % 2].button(q, key=f"sample_{q[:30]}", use_container_width=True):
+                if cols[i % 2].button(q, key=f"sample_{g_idx}_{i}", use_container_width=True):
                     st.session_state["_prefill"] = q
                     st.rerun()
             st.markdown("")
