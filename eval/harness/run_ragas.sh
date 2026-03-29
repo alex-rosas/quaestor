@@ -11,6 +11,8 @@
 
 set -euo pipefail
 
+export PATH="$HOME/.local/bin:$PATH"
+
 GROQ_KEYS=(
     "GROQ_KEY_REDACTED_1"
     "GROQ_KEY_REDACTED_2"

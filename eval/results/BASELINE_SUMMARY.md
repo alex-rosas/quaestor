@@ -1,61 +1,78 @@
-# Phase 2 Child-Chunk Baseline — RAGAS Results
+# Phase 2 & 3 Baseline Summary
 
-**Run timestamp:** 2026-03-27 04:07:29 UTC
-**Output file:** `eval/results/phase2_child_baseline.json`
+---
 
-## Configuration
+## Phase 2 Baseline — Child-Only Context (256 chars)
 
-| Parameter | Value |
-|-----------|-------|
-| Chunking | Child-only (256 chars, no parent injection) |
-| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
-| Confidence threshold | 0.0 (default) |
-| LLM provider | Groq `llama-3.3-70b-versatile` |
-| Vector store | Chroma (1,110 documents) |
-| Questions | 20 |
+**Run date:** 2026-03-27
+**Output file:** `eval/results/phase2_child_baseline_clean.json`
+**Status:** ✅ Clean baseline (no TPD errors, all 20 questions evaluated)
 
-## Pipeline Phase (before RAGAS)
+### RAGAS Scores
 
-| Outcome | Count | Notes |
-|---------|-------|-------|
-| Gate-refused (refused=True) | 12 | Cross-encoder scored top chunk below threshold 0.0 — canned refusal text, no LLM call |
-| TPD errors (429) | 6 | Groq rolling window exhausted (~99,924/100,000 tokens); empty contexts; `[ERROR: 429...]` response |
-| Gate-passed, LLM refused on its own | 1 | Gate let the query through (score ≥ 0.0) but LLM said "I don't have enough information" |
-| Gate-passed, correct answer | 1 | Q03: net income FY2024 = $93,736M — retrieved correct income statement chunk |
-| **Total** | **20** | |
+| Metric | Score | Status |
+|--------|-------|--------|
+| Faithfulness | NaN | ✅ Expected (insufficient answers to measure) |
+| Answer Relevancy | 0.138 | ✅ Expected (most responses were refusals) |
+| Context Precision | 0.000 | ✅ Expected (chunks didn't enable answers) |
+| Context Recall | NaN | ✅ Expected (insufficient answers to measure) |
 
-**About reproducibility:** The 6 TPD errors make this run non-reproducible. Someone running the same script on a fresh TPD budget will get different results (those 6 questions will either be answered or gate-refused, not error). The baseline must be rerun on a day with a full 100k token budget before it can serve as a valid denominator for Phase 3 comparison. See `genesis/BITACORA.md` for exact rerun instructions.
+### Pipeline Outcomes
 
-## RAGAS Scores
+| Outcome | Count | % |
+|---------|-------|---|
+| Gate-refused | 12 | 60% |
+| LLM self-refused | 6 | 30% |
+| Answered | 2 | 10% |
+| Errors | 0 | 0% |
+
+### Interpretation
+
+The NaN and zero scores are not failures — they are the expected artifact of a
+60% gate refusal rate. RAGAS cannot measure faithfulness when no answers exist.
+The system refused rather than hallucinated; this is correct behavior for a
+financial RAG system.
+
+**Root cause:** 256-char child chunks are too short to contain complete numerical
+answers. The gate correctly identifies them as insufficient context.
+
+---
+
+## Phase 3 Baseline — Parent-Injected Context (1024 chars)
+
+**Run date:** 2026-03-28
+**Output file:** `eval/results/phase3_parent_injection.json`
+**Change:** One line in `graph.py` — `doc.metadata.get('parent_content', doc.page_content)`
+
+### RAGAS Scores
 
 | Metric | Score |
 |--------|-------|
-| faithfulness | NaN |
-| answer_relevancy | 0.0 |
-| context_precision | 0.0 |
-| context_recall | NaN |
+| Faithfulness | 0.367 |
+| Answer Relevancy | 0.263 |
+| Context Precision | 0.306 |
+| Context Recall | 0.500 |
 
-### Why all scores are degenerate
+### Pipeline Outcomes
 
-These scores are not meaningful measurements — they are the expected artifact of a near-total refusal rate:
+| Outcome | Count | % |
+|---------|-------|---|
+| Gate-refused | 12 | 60% |
+| LLM self-refused | 0 | 0% |
+| Answered | 8 | 40% |
+| Errors | 0 | 0% |
 
-- **NaN faithfulness / context_recall**: RAGAS cannot compute these for refusal responses or empty contexts.
-- **0.0 answer_relevancy / context_precision**: A handful of questions received non-NaN scores during the RAGAS evaluation pass, but all were 0.0 (the RAGAS LLM also hit TPD limits during its own 80-job evaluation phase, causing its judgements to fail).
+---
 
-### What this baseline actually establishes
+## Before/After Delta
 
-This run is the **denominator** for Phase 3 comparison. Its value is not the numbers themselves but what they reveal about Phase 2 child-chunk-only retrieval:
+| Metric | Phase 2 | Phase 3 | Improvement |
+|--------|---------|---------|-------------|
+| Faithfulness | NaN | 0.367 | Measurable |
+| Answer Relevancy | 0.138 | 0.263 | +91% |
+| Context Precision | 0.000 | 0.306 | From zero to real |
+| Context Recall | NaN | 0.500 | Measurable |
+| LLM self-refusals | 30% | 0% | -30% |
+| Answer rate | 10% | 40% | +300% |
 
-1. The confidence gate is working correctly — it is refusing when retrieved chunks are too short to contain complete numerical answers.
-2. The correct answer rate for factual numerical questions is ~5% (1/20) at threshold 0.0 with 256-char child chunks.
-3. Parent context injection (Phase 3) is the intervention designed to close this gap: longer parent windows give the LLM enough context to answer questions the child chunks currently refuse.
-
-## Phase 3 Target
-
-After parent context injection is implemented, re-run with:
-
-```
-uv run python scripts/evaluate.py --output eval/results/phase3_parent_injection.json
-```
-
-Expected improvements: fewer refusals on answerable questions (Q1, Q2, Q5, Q8, Q9, Q12–Q15, Q17–Q19), stable refusals on genuinely unanswerable questions (Q16, Q18, Q19, Q20), and non-NaN RAGAS scores reflecting real answer quality.
+**Full comparison:** `eval/results/COMPARISON.md`
