@@ -12,7 +12,7 @@ Quaestor sits at the boundary between search and reasoning. It is not a chatbot 
 
 ---
 
-## Demo
+## Demonstration
 
 **Question:** *"What was Apple's net income in FY2025?"*
 

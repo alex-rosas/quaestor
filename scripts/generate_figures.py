@@ -32,24 +32,38 @@ from quaestor.ingestion.chunker import chunk_documents
 OUT = Path(__file__).parent.parent / "docs" / "figures"
 OUT.mkdir(parents=True, exist_ok=True)
 
+BG       = "#0d1117"   # GitHub dark background
+PANEL    = "#161b22"   # slightly lighter panel
+BORDER   = "#30363d"   # subtle spine / grid colour
+TEXT     = "#e6edf3"   # primary text
+SUBTEXT  = "#8b949e"   # captions / secondary
+
 STYLE = {
-    "figure.facecolor": "white",
-    "axes.facecolor": "#f8f9fa",
-    "axes.grid": True,
-    "grid.color": "white",
-    "grid.linewidth": 1.2,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "font.family": "sans-serif",
-    "font.size": 11,
+    "figure.facecolor":   BG,
+    "axes.facecolor":     PANEL,
+    "axes.edgecolor":     BORDER,
+    "axes.labelcolor":    TEXT,
+    "axes.grid":          True,
+    "grid.color":         BORDER,
+    "grid.linewidth":     0.8,
+    "axes.spines.top":    False,
+    "axes.spines.right":  False,
+    "xtick.color":        SUBTEXT,
+    "ytick.color":        SUBTEXT,
+    "text.color":         TEXT,
+    "legend.facecolor":   PANEL,
+    "legend.edgecolor":   BORDER,
+    "legend.labelcolor":  TEXT,
+    "font.family":        "sans-serif",
+    "font.size":          11,
 }
 plt.rcParams.update(STYLE)
 
-BLUE = "#4C72B0"
-RED  = "#DD4444"
-GREEN = "#2ecc71"
-ORANGE = "#e67e22"
-GREY = "#95a5a6"
+BLUE   = "#58a6ff"   # GitHub blue — pops on dark
+RED    = "#f85149"   # GitHub red
+GREEN  = "#3fb950"   # GitHub green
+ORANGE = "#d29922"   # GitHub yellow-orange
+GREY   = "#8b949e"   # GitHub muted
 
 # ---------------------------------------------------------------------------
 # Load data
@@ -135,7 +149,7 @@ ax1.axvline(broken_total / len(order), color=RED, linestyle=":", alpha=0.3)
 ax1.text(0.97, 0.03, f"Total broken: {broken_total:,}\n({broken_total/len(fixed_chunks)*100:.0f}% of all chunks)",
          transform=ax1.transAxes, ha="right", va="bottom",
          fontsize=9.5, color=RED,
-         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=RED, alpha=0.8))
+         bbox=dict(boxstyle="round,pad=0.3", facecolor=PANEL, edgecolor=RED, alpha=0.8))
 
 sizes  = [healthy, broken_total]
 colors = [GREEN, RED]
@@ -175,7 +189,7 @@ ax1.legend()
 ax1.text(0.97, 0.95,
          f"Spike at ceiling:\n{sum(1 for l in fixed_lengths if l >= 500):,} chunks\nat 500+ chars",
          transform=ax1.transAxes, ha="right", va="top", fontsize=9,
-         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=RED, alpha=0.8))
+         bbox=dict(boxstyle="round,pad=0.3", facecolor=PANEL, edgecolor=RED, alpha=0.8))
 
 sorted_lengths = sorted(fixed_lengths)
 cdf = np.arange(1, len(sorted_lengths) + 1) / len(sorted_lengths)
@@ -213,7 +227,7 @@ at_ceiling = sum(1 for l in hier_lengths if l >= 250)
 ax1.text(0.97, 0.95,
          f"At ceiling: {at_ceiling:,}\n({at_ceiling/len(hier_lengths)*100:.0f}% of chunks)",
          transform=ax1.transAxes, ha="right", va="top", fontsize=9,
-         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=ORANGE, alpha=0.8))
+         bbox=dict(boxstyle="round,pad=0.3", facecolor=PANEL, edgecolor=ORANGE, alpha=0.8))
 
 sorted_hier = sorted(hier_lengths)
 cdf3 = np.arange(1, len(sorted_hier) + 1) / len(sorted_hier)
@@ -231,7 +245,7 @@ ax2.text(0.05, 0.95,
          f"Clean splits: {clean_pct:.0f}% of chunks\nend at sentence boundary\n(vs ~21% for fixed-size)",
          transform=ax2.transAxes, ha="left", va="top", fontsize=9,
          color=GREEN, fontweight="bold",
-         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor=GREEN, alpha=0.8))
+         bbox=dict(boxstyle="round,pad=0.3", facecolor=PANEL, edgecolor=GREEN, alpha=0.8))
 
 plt.tight_layout()
 out3 = OUT / "03_hierarchical_distribution.png"
