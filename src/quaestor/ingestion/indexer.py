@@ -149,7 +149,21 @@ def build_index(
         embedding_function=embeddings,
         persist_directory=str(persist_dir or settings.chroma_persist_dir),
     )
-    vector_store.add_documents(documents=chunks, ids=ids)
+
+    # ChromaDB enforces a hard batch limit of 5461 documents per upsert call.
+    # Large filings (e.g. JPMorgan 10-K) can produce 6000+ child chunks, so
+    # we split into batches and upsert sequentially.
+    _CHROMA_BATCH_LIMIT = 5000  # stay safely below the 5461 hard limit
+    for batch_start in range(0, len(chunks), _CHROMA_BATCH_LIMIT):
+        batch_chunks = chunks[batch_start : batch_start + _CHROMA_BATCH_LIMIT]
+        batch_ids = ids[batch_start : batch_start + _CHROMA_BATCH_LIMIT]
+        vector_store.add_documents(documents=batch_chunks, ids=batch_ids)
+        logger.info(
+            "Upserted batch %d–%d of %d",
+            batch_start + 1,
+            batch_start + len(batch_chunks),
+            len(chunks),
+        )
 
     logger.info("Indexing complete — %d chunks stored.", len(chunks))
     return vector_store
