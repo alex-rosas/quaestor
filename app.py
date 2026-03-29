@@ -437,22 +437,20 @@ def main() -> None:
 
         if graph_answer.refused:
             st.info(
-                "🔒 **Retrieval confidence too low — no LLM call was made.**\n\n"
-                "The system searched the indexed documents and scored how relevant "
-                "the results were to your question. The score fell below the confidence "
-                "threshold, so the pipeline stopped here rather than risk sending weak "
-                "evidence to the model.\n\n"
+                "🔒 **Stopped at retrieval — the model was never called.**\n\n"
+                "The system found passages in the indexed documents and scored how relevant "
+                "they were to your question. That score fell below the confidence threshold, "
+                "so the pipeline stopped there rather than pass weak evidence to the model.\n\n"
                 "**What this means:** The answer is likely not in the indexed documents, "
-                "or the question may be phrased in a way that doesn't match the filing language.\n\n"
+                "or the question may be phrased differently from how it appears in the filing.\n\n"
                 "_Try rephrasing, or check that the relevant filing is indexed._"
             )
         elif is_llm_self_refusal:
             st.info(
-                "🤔 **The model received the documents but couldn't form a confident answer.**\n\n"
-                "Unlike the case above, the retrieval confidence was high enough — relevant "
-                "passages were found and sent to the model. However, after reading the context, "
-                "the model determined it still didn't have enough information to give a "
-                "reliable, cited answer.\n\n"
+                "🤔 **Relevant passages were found, but the model couldn't form a confident answer.**\n\n"
+                "The retrieval step succeeded — passages were scored, ranked, and sent to the model. "
+                "After reading that context, the model determined it still lacked enough "
+                "explicit information to give a reliable, cited answer.\n\n"
                 "**What this means:** The documents were retrieved correctly, but the specific "
                 "detail you're asking for may not be explicitly stated in those passages.\n\n"
                 "_Try asking a more specific question, or check a different filing._"
