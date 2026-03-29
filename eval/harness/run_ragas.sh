@@ -5,8 +5,9 @@
 # rotating through Groq API keys if the token limit is hit.
 # Scores one question at a time and resumes from checkpoint on rotation.
 #
-# Must be run from the project root, after run_pipeline.sh completes:
-#   bash eval/harness/run_ragas.sh
+# Usage (from project root, pass the same output path as run_pipeline.sh):
+#   bash eval/harness/run_ragas.sh                                  # default output
+#   bash eval/harness/run_ragas.sh benchmarks/phase3_parent.json   # custom output
 
 set -euo pipefail
 
@@ -16,13 +17,14 @@ GROQ_KEYS=(
     "GROQ_KEY_REDACTED_3"
 )
 
-CHECKPOINT="benchmarks/ragas_results.checkpoint.json"
-RAGAS_CHECKPOINT="benchmarks/ragas_results.ragas_checkpoint.json"
+OUTPUT="${1:-benchmarks/ragas_results.json}"
+CHECKPOINT="${OUTPUT%.json}.checkpoint.json"
+RAGAS_CHECKPOINT="${OUTPUT%.json}.ragas_checkpoint.json"
 SLEEP_BETWEEN_CYCLES=60
 
 if [[ ! -f "$CHECKPOINT" ]]; then
     echo "No pipeline checkpoint found at $CHECKPOINT. Run the pipeline phase first:"
-    echo "  bash eval/harness/run_pipeline.sh"
+    echo "  bash eval/harness/run_pipeline.sh $OUTPUT"
     exit 1
 fi
 
@@ -51,7 +53,7 @@ while true; do
     export GROQ_API_KEY="$current_key"
 
     set +e
-    uv run python scripts/evaluate.py --ragas-only
+    uv run python scripts/evaluate.py --ragas-only --output "$OUTPUT"
     exit_code=$?
     set -e
 
@@ -59,7 +61,7 @@ while true; do
 
     if [[ $exit_code -eq 0 ]]; then
         echo ""
-        echo "✓ RAGAS scoring complete. Results saved to benchmarks/ragas_results.json"
+        echo "✓ RAGAS scoring complete. Results saved to $OUTPUT"
         exit 0
     fi
 

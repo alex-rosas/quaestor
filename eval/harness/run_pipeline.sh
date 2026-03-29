@@ -5,11 +5,12 @@
 # rotating through Groq API keys whenever the token-per-day limit is hit.
 # Resumes from the last successful checkpoint automatically on each retry.
 #
-# Must be run from the project root:
-#   bash eval/harness/run_pipeline.sh
+# Usage (from project root):
+#   bash eval/harness/run_pipeline.sh                                  # default output
+#   bash eval/harness/run_pipeline.sh benchmarks/phase3_parent.json   # custom output
 #
-# Once complete, run the RAGAS scoring phase:
-#   bash eval/harness/run_ragas.sh
+# Once complete, run the RAGAS scoring phase with the same output path:
+#   bash eval/harness/run_ragas.sh [same output path]
 
 set -euo pipefail
 
@@ -19,9 +20,10 @@ GROQ_KEYS=(
     "GROQ_KEY_REDACTED_3"
 )
 
-CHECKPOINT="benchmarks/ragas_results.checkpoint.json"
+OUTPUT="${1:-benchmarks/ragas_results.json}"
+CHECKPOINT="${OUTPUT%.json}.checkpoint.json"
 TOTAL_QUESTIONS=20
-EXTRA_ARGS=("$@")
+EXTRA_ARGS=()
 
 # Count successfully completed questions (excludes errors)
 questions_done() {
@@ -51,7 +53,7 @@ while true; do
     export GROQ_API_KEY="$current_key"
 
     set +e
-    uv run python scripts/evaluate.py --pipeline-only $resume_flag "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+    uv run python scripts/evaluate.py --pipeline-only --output "$OUTPUT" $resume_flag
     exit_code=$?
     set -e
 
@@ -60,7 +62,7 @@ while true; do
     if [[ $done_after -ge $TOTAL_QUESTIONS ]]; then
         echo ""
         echo "✓ All $TOTAL_QUESTIONS questions answered. Now run RAGAS scoring:"
-        echo "  bash eval/harness/run_ragas.sh"
+        echo "  bash eval/harness/run_ragas.sh $OUTPUT"
         exit 0
     fi
 
