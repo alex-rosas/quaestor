@@ -16,10 +16,15 @@ data/raw/
 # Claude Code
 genesis/
 
-# Benchmarks - results only, not raw data
+# Benchmarks - keep final results, ignore harness artifacts
 benchmarks/*.csv
 benchmarks/*.parquet
-!benchmarks/*.json
+benchmarks/*checkpoint*.json
+benchmarks/milestone_Q*.json
+benchmarks/ragas_milestone_Q*.json
+!benchmarks/ragas_results.json
+!benchmarks/phase1-results.json
+!benchmarks/phase2-results.json
 
 # Keep docs/ clean
 docs/**/.DS_Store
@@ -33,6 +38,9 @@ docs/**/*.tmp
 **/__pycache__/
 **/*.pyc
 **/*.pyo
+
+# Logs
+logs/
 
 # Temporary files
 migration-status.txt
