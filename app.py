@@ -356,37 +356,65 @@ def main() -> None:
 
     if ask_clicked or (auto_run and question):
 
-        # --- PII check ---
         display_question = question
-        if check_pii:
-            try:
-                analyzer, anonymizer = _get_pii_engines()
-                from quaestor.guardrails.input import detect_pii, redact_pii
-                entities = detect_pii(question, analyzer=analyzer)
-                if entities:
-                    result = redact_pii(question, analyzer=analyzer, anonymizer=anonymizer)
-                    display_question = result.redacted_text
-                    st.warning(
-                        f"⚠️ **PII detected** in your question "
-                        f"({', '.join(sorted({e.entity_type for e in entities}))}). "
-                        "Sending redacted version to the LLM."
-                    )
-                    with st.expander("Redacted question"):
-                        st.code(display_question)
-            except Exception as e:
-                st.caption(f"PII check unavailable: {e}")
+        graph_answer = None
 
-        # --- RAG graph ---
-        with st.spinner("Retrieving and generating…"):
+        with st.status("Running pipeline…", expanded=True) as status:
+
+            # --- Step 1: PII check ---
+            if check_pii:
+                st.write("🔍 Scanning for PII…")
+                try:
+                    analyzer, anonymizer = _get_pii_engines()
+                    from quaestor.guardrails.input import detect_pii, redact_pii
+                    entities = detect_pii(question, analyzer=analyzer)
+                    if entities:
+                        result = redact_pii(question, analyzer=analyzer, anonymizer=anonymizer)
+                        display_question = result.redacted_text
+                        st.warning(
+                            f"⚠️ **PII detected** "
+                            f"({', '.join(sorted({e.entity_type for e in entities}))}). "
+                            "Sending redacted version to the LLM."
+                        )
+                    else:
+                        st.write("✅ No PII found.")
+                except Exception as e:
+                    st.caption(f"PII check unavailable: {e}")
+            else:
+                st.write("⏭️ PII check disabled.")
+
+            # --- Step 2: Retrieval + reranking ---
+            st.write("📚 Retrieving and reranking passages…")
             try:
                 from quaestor.retrieval.graph import run_rag_graph
                 graph = _get_rag_graph(vs, confidence_threshold)
+            except Exception as e:
+                st.error(f"Failed to build pipeline: {e}")
+                status.update(label="Pipeline error", state="error")
+                st.stop()
+
+            # --- Step 3: Confidence gate + generation ---
+            st.write("🧠 Scoring confidence and generating answer…")
+            try:
                 graph_answer = run_rag_graph(graph, display_question)
             except Exception as e:
                 st.error(f"Pipeline error: {e}")
-                return
+                status.update(label="Pipeline error", state="error")
+                st.stop()
+
+            # --- Step 4: NLI hallucination check ---
+            if check_hallucination and graph_answer and not graph_answer.refused:
+                st.write("🛡️ Running hallucination check…")
+
+            if graph_answer and graph_answer.refused:
+                status.update(label="🚫 Confidence gate fired — question refused", state="error", expanded=False)
+            else:
+                status.update(label="✅ Answer ready", state="complete", expanded=False)
 
         # --- Display answer ---
+        if graph_answer is None:
+            st.stop()
+
         if graph_answer.refused:
             st.info(
                 "🔍 **Low retrieval confidence** — the retrieved documents "
@@ -406,28 +434,27 @@ def main() -> None:
 
             # --- Hallucination check ---
             if check_hallucination and not graph_answer.refused:
-                with st.spinner("Checking for hallucinations…"):
-                    try:
-                        from quaestor.guardrails.output import check_hallucination
-                        context = " ".join(graph_answer.sources) or graph_answer.answer
-                        h_result = check_hallucination(
-                            answer=graph_answer.answer,
-                            context=context,
-                            classifier=_get_nli_classifier(),
+                try:
+                    from quaestor.guardrails.output import check_hallucination
+                    context = " ".join(graph_answer.sources) or graph_answer.answer
+                    h_result = check_hallucination(
+                        answer=graph_answer.answer,
+                        context=context,
+                        classifier=_get_nli_classifier(),
+                    )
+                    if h_result.is_hallucination:
+                        st.warning(
+                            f"⚠️ **NLI check**: answer may not be fully supported "
+                            f"by the retrieved context "
+                            f"(entailment score: {h_result.entailment_score:.2f})"
                         )
-                        if h_result.is_hallucination:
-                            st.warning(
-                                f"⚠️ **NLI check**: answer may not be fully supported "
-                                f"by the retrieved context "
-                                f"(entailment score: {h_result.entailment_score:.2f})"
-                            )
-                        else:
-                            st.success(
-                                f"✅ **NLI check**: answer appears grounded in context "
-                                f"(entailment score: {h_result.entailment_score:.2f})"
-                            )
-                    except Exception as e:
-                        st.caption(f"Hallucination check unavailable: {e}")
+                    else:
+                        st.success(
+                            f"✅ **NLI check**: answer appears grounded in context "
+                            f"(entailment score: {h_result.entailment_score:.2f})"
+                        )
+                except Exception as e:
+                    st.caption(f"Hallucination check unavailable: {e}")
 
             # Sources
             if graph_answer.sources:
