@@ -14,9 +14,11 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
 GROQ_KEYS=(
-    "GROQ_KEY_REDACTED_1"
-    "GROQ_KEY_REDACTED_2"
-    "GROQ_KEY_REDACTED_3"
+    # Add your Groq API keys here for rotation (one per line).
+    # Keys rotate automatically when the token-per-day limit is hit.
+    # Example:
+    #   "gsk_YOUR_FIRST_KEY_HERE"
+    #   "gsk_YOUR_SECOND_KEY_HERE"
 )
 
 OUTPUT="${1:-benchmarks/ragas_results.json}"
