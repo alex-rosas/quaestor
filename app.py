@@ -193,6 +193,40 @@ def _index_uploaded_files(
 
 
 # ---------------------------------------------------------------------------
+# Sample questions (golden evaluation dataset — 20 questions)
+# ---------------------------------------------------------------------------
+
+SAMPLE_QUESTIONS = {
+    "📊 Factual": [
+        "What were Apple's total net sales in fiscal year 2025?",
+        "What was Apple's net income in fiscal year 2025?",
+        "What was Apple's net income in fiscal year 2024?",
+        "What was Apple's net income in fiscal year 2023?",
+        "What are the primary risk factors Apple cites related to interest rates?",
+        "What other primary risk factors does Apple disclose in its 10-K?",
+        "On what date was Apple's fiscal year 2025 10-K filing submitted to the SEC?",
+        "What does Apple identify as its main product and service categories?",
+    ],
+    "🔗 Multi-hop": [
+        "How did Apple's net income change between fiscal year 2024 and fiscal year 2025, and what percentage growth does that represent?",
+        "How did Apple's net income trend across fiscal years 2023, 2024, and 2025?",
+        "How did Apple's total net sales compare between fiscal years 2024 and 2025, and what was the approximate growth rate?",
+        "What combination of risk factors related to its global supply chain and geographic market concentration does Apple disclose?",
+        "What do Apple's risk factor disclosures say about the relationship between macroeconomic conditions and consumer demand for its products?",
+        "How does Apple describe its cybersecurity risk and what potential consequences does it disclose?",
+        "How does Apple's exposure to foreign exchange risk interact with its international revenue base according to the 10-K?",
+    ],
+    "🚫 Unanswerable — confidence gate fires": [
+        "What is Apple's projected total net sales for fiscal year 2026?",
+        "What is Apple's internal target stock price or market capitalisation goal?",
+        "How many new employees does Apple plan to hire in fiscal year 2026?",
+        "What are Apple's specific plans for entering the autonomous vehicle market?",
+        "What dividends per share did Apple pay in fiscal year 2020?",
+    ],
+}
+
+
+# ---------------------------------------------------------------------------
 # Main UI
 # ---------------------------------------------------------------------------
 
@@ -287,14 +321,40 @@ def main() -> None:
         )
         return
 
+    # Prefill text input when a sample question button is clicked
+    if "_prefill" in st.session_state:
+        st.session_state["question_input"] = st.session_state.pop("_prefill")
+        st.session_state["_auto_run"] = True
+
     st.subheader("Ask a question")
     question = st.text_input(
         "Question",
         placeholder="What was Apple's total net sales in fiscal year 2025?",
         label_visibility="collapsed",
+        key="question_input",
     )
 
-    if st.button("Ask", type="primary", disabled=not question):
+    col_ask, col_clear = st.columns([1, 6])
+    ask_clicked = col_ask.button("Ask", type="primary", disabled=not question)
+    auto_run = st.session_state.pop("_auto_run", False)
+
+    # Sample questions panel
+    with st.expander("💡 Try these evaluation questions", expanded=not question):
+        st.caption(
+            "These are the 20 questions from Quaestor's golden evaluation dataset. "
+            "The **unanswerable** group demonstrates the confidence gate — "
+            "the system refuses rather than hallucinating."
+        )
+        for group, questions in SAMPLE_QUESTIONS.items():
+            st.markdown(f"**{group}**")
+            cols = st.columns(2)
+            for i, q in enumerate(questions):
+                if cols[i % 2].button(q, key=f"sample_{q[:30]}", use_container_width=True):
+                    st.session_state["_prefill"] = q
+                    st.rerun()
+            st.markdown("")
+
+    if ask_clicked or (auto_run and question):
 
         # --- PII check ---
         display_question = question
