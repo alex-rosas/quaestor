@@ -63,3 +63,4 @@ examples/phase1-baseline/.chroma/
 examples/phase1-baseline/.venv/
 examples/phase1-baseline/.tmp_uploads/
 
+!benchmarks/phase3_parent_injection.json
