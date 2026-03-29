@@ -1,0 +1,110 @@
+# Quaestor production stack — FastAPI + Langfuse observability.
+#
+# Prerequisites:
+#   1. Copy .env.example to .env and set GROQ_API_KEY
+#   2. Ollama must be running on the host (for nomic-embed-text embeddings)
+#
+# Usage:
+#   docker-compose up -d           # start all services
+#   docker-compose logs -f         # follow logs
+#   docker-compose down            # stop (preserves volumes)
+#   docker-compose down -v         # stop and delete all data
+#
+# After startup (~60s):
+#   API docs:  http://localhost:8000/docs
+#   Langfuse:  http://localhost:3000
+#
+# First-time Langfuse setup:
+#   1. Open http://localhost:3000 and create a local account
+#   2. Create a project called "Quaestor"
+#   3. Copy the Public Key / Secret Key into .env
+#   4. Restart only the API: docker-compose restart quaestor-api
+
+version: '3.8'
+
+services:
+
+  # ─── Langfuse observability ──────────────────────────────────────────────
+
+  langfuse-db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: langfuse
+    volumes:
+      - langfuse-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - quaestor-net
+    restart: unless-stopped
+
+  langfuse-server:
+    image: langfuse/langfuse:latest
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@langfuse-db:5432/langfuse
+      # ⚠️  Change these two values before exposing to a network
+      NEXTAUTH_SECRET: changeme-generate-random-secret
+      NEXTAUTH_URL: http://localhost:3000
+      SALT: changeme-generate-random-salt
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    networks:
+      - quaestor-net
+    restart: unless-stopped
+
+  # ─── Quaestor FastAPI application ────────────────────────────────────────
+
+  quaestor-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # Internal service URL overrides the .env LANGFUSE_HOST so the
+      # container reaches Langfuse via the Docker network, not localhost.
+      LANGFUSE_HOST: http://langfuse-server:3000
+      # Ollama runs on the host machine — Docker's special DNS name for it:
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      # ChromaDB persisted inside the mounted volume
+      CHROMA_PERSIST_DIR: /app/.chroma
+    volumes:
+      - ./.chroma:/app/.chroma
+      - ./data:/app/data
+    depends_on:
+      - langfuse-server
+    networks:
+      - quaestor-net
+    restart: unless-stopped
+
+  # ─── Optional: Qdrant vector database ────────────────────────────────────
+  # Uncomment to switch from ChromaDB to Qdrant hybrid search.
+  # Also set VECTOR_STORE_BACKEND=qdrant in .env.
+  #
+  # qdrant:
+  #   image: qdrant/qdrant:latest
+  #   ports:
+  #     - "6333:6333"
+  #   volumes:
+  #     - qdrant-data:/qdrant/storage
+  #   networks:
+  #     - quaestor-net
+  #   restart: unless-stopped
+
+volumes:
+  langfuse-db-data:
+  # qdrant-data:
+
+networks:
+  quaestor-net:
+    driver: bridge

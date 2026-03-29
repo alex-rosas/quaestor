@@ -1,0 +1,57 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Egg / dist / build artifacts
+*.egg-info/
+dist/
+build/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Tests (not needed at runtime)
+tests/
+.pytest_cache/
+.coverage
+
+# Documentation (README.md is needed for pyproject.toml build, keep it)
+docs/
+genesis/
+notebooks/
+*.md
+!README.md
+
+# Environment files — never bake secrets into the image
+.env
+.env.*
+!.env.example
+
+# Eval harness and results (large; not needed in container)
+eval/
+benchmarks/
+scripts/
+
+# Data files are mounted as volumes at runtime
+data/raw/
+data/processed/
+
+# ChromaDB is mounted as a volume at runtime
+.chroma/
+
+# Langfuse dev compose (not needed in image)
+docker-compose.langfuse.yml
