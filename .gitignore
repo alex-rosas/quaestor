@@ -55,7 +55,7 @@ data/**/*
 !data/processed/.gitkeep
 
 # docs/ — ignored until final documentation phase
-docs/
+documents/
 
 # Baseline runtime artifacts
 examples/phase1-baseline/data/
