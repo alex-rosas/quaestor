@@ -28,7 +28,7 @@
 
 ### Who It's For
 
-Financial analysts and auditors at firms like Ernst & Young (EY) who spend significant time manually navigating dense regulatory documents:
+Financial analysts and auditors at big firms who spend significant time manually navigating dense regulatory documents:
 - SEC 10-K annual filings (300–400 pages)
 - IFRS/IAS accounting standards
 - PCAOB auditing standards
