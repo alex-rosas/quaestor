@@ -100,6 +100,50 @@ class AskResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# /retrieve
+# ---------------------------------------------------------------------------
+
+class RetrieveRequest(BaseModel):
+    """Body for ``POST /retrieve``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    query: str = Field(
+        min_length=1,
+        description="Natural-language search query.",
+    )
+    top_k: int = Field(
+        default=5,
+        gt=0,
+        description="Number of chunks to return.",
+    )
+
+
+class RetrieveChunk(BaseModel):
+    """Single retrieved chunk in :class:`RetrieveResponse`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    chunk_text: str = Field(description="Raw text content of the chunk.")
+    score: float = Field(description="Cosine similarity score (higher = more relevant).")
+    metadata: dict = Field(
+        default_factory=dict,
+        description="Document metadata (source, page, section, etc.).",
+    )
+
+
+class RetrieveResponse(BaseModel):
+    """Body returned by ``POST /retrieve``."""
+
+    model_config = ConfigDict(frozen=True)
+
+    results: list[RetrieveChunk] = Field(
+        default_factory=list,
+        description="Retrieved chunks ordered by relevance.",
+    )
+
+
+# ---------------------------------------------------------------------------
 # /health
 # ---------------------------------------------------------------------------
 

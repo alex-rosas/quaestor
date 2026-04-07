@@ -41,6 +41,8 @@ from quaestor.api.schemas import (
     HallucinationCheck,
     HealthResponse,
     PiiReport,
+    RetrieveRequest,
+    RetrieveResponse,
 )
 from quaestor.config import VectorStoreBackend, settings
 from quaestor.generation.prompts import PROMPT_VERSION, RAG_PROMPT
@@ -366,6 +368,34 @@ async def ask_stream(
         yield _sse({"type": "done"})
 
     return StreamingResponse(_event_stream(), media_type="text/event-stream")
+
+
+@app.post("/retrieve", response_model=RetrieveResponse)
+async def retrieve_chunks(
+    request: RetrieveRequest,
+    vector_store=Depends(get_vector_store),
+) -> RetrieveResponse:
+    """Return raw retrieved chunks for a query without generating an answer.
+
+    Used by Consilium to fetch document context before passing it to its
+    own agent pipeline.  No reranking or LLM call is performed — pure
+    vector-similarity retrieval only.
+
+    Returns chunks ordered by cosine-similarity score (highest first).
+    """
+    logger.info("POST /retrieve — query: %r top_k=%d", request.query[:80], request.top_k)
+
+    docs_and_scores = vector_store.similarity_search_with_score(
+        request.query, k=request.top_k
+    )
+
+    results = [
+        {"chunk_text": doc.page_content, "score": float(score), "metadata": doc.metadata}
+        for doc, score in docs_and_scores
+    ]
+
+    logger.info("POST /retrieve — returning %d chunk(s)", len(results))
+    return RetrieveResponse(results=results)
 
 
 # ---------------------------------------------------------------------------
